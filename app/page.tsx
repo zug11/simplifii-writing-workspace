@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import { prepareBrowserCache, quarantineUnreadableBrowserCache, readBrowserCache, writeBrowserCache, writeBrowserJournal } from "@/lib/browser-cache";
+import { projectDraftIntoBlocks, projectDraftIntoOneBlock, segmentDraft, type DraftGrouping } from "@/lib/draft-structure";
 
 type Stage = "import" | "review" | "choice" | "workspace";
 type StructureChoice = "simplifii" | "self";
@@ -63,6 +64,11 @@ type WritingBlock = {
   guidanceIds: string[];
 };
 
+type StructurePlanBlock = {
+  heading: string;
+  guidanceIds: string[];
+};
+
 type AiExtraction = Omit<Assignment, "requirements" | "criteria"> & {
   requirements: Array<Omit<Requirement, "id">>;
   criteria: Array<Omit<Criterion, "id" | "tone">>;
@@ -86,8 +92,10 @@ type CachedAssignment = {
   stage: Stage;
   files: ImportedFile[];
   pastedText: string;
+  draftText?: string;
   assignment: Assignment;
   choice: StructureChoice;
+  structurePlan?: StructurePlanBlock[];
   blocks: WritingBlock[];
   view: ViewMode;
   analysisResult: DraftAnalysis | null;
@@ -179,6 +187,7 @@ const COURSE_CODE_PATTERN = /\b[A-Z]{3,5}\d{3,4}\b/;
 const WORD_LIMIT_PATTERN = /(?:word\s*(?:count|limit)|maximum)\D{0,16}(\d{3,5})/i;
 const DUE_PATTERN = /(?:due(?:\s+date)?|submit(?:\s+by)?)\s*[:-]?\s*([^\n.]{4,48})/i;
 const MAX_AI_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_EXISTING_DRAFT_CHARACTERS = 120_000;
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -193,12 +202,14 @@ function blankCachedAssignment(): CachedAssignment {
     stage: "import",
     files: [],
     pastedText: "",
+    draftText: "",
     assignment: {
       ...DEFAULT_ASSIGNMENT,
       requirements: DEFAULT_ASSIGNMENT.requirements.map((requirement) => ({ ...requirement, keywords: [...requirement.keywords] })),
       criteria: DEFAULT_ASSIGNMENT.criteria.map((criterion) => ({ ...criterion })),
     },
     choice: "simplifii",
+    structurePlan: [],
     blocks: [],
     view: "guide",
     analysisResult: null,
@@ -213,7 +224,8 @@ function isCachedAssignment(item: unknown): item is CachedAssignment {
   if (!isRecord(item) || typeof item.id !== "string" || typeof item.createdAt !== "number" || typeof item.updatedAt !== "number") return false;
   if (!(["import", "review", "choice", "workspace"] as unknown[]).includes(item.stage)) return false;
   if (!Array.isArray(item.files) || !Array.isArray(item.blocks) || !isRecord(item.assignment)) return false;
-  if (typeof item.pastedText !== "string" || !(["simplifii", "self"] as unknown[]).includes(item.choice)) return false;
+  if (typeof item.pastedText !== "string" || (item.draftText !== undefined && typeof item.draftText !== "string") || !(["simplifii", "self"] as unknown[]).includes(item.choice)) return false;
+  if (item.structurePlan !== undefined && (!Array.isArray(item.structurePlan) || !item.structurePlan.every((block) => isRecord(block) && typeof block.heading === "string" && Array.isArray(block.guidanceIds)))) return false;
   if (!(["guide", "full-draft"] as unknown[]).includes(item.view)) return false;
 
   const assignment = item.assignment;
@@ -330,13 +342,14 @@ function extractCriteria(text: string): Criterion[] {
 }
 
 function extractAssignment(files: ImportedFile[], pastedText: string): Assignment {
-  const sourceText = [pastedText, ...files.map((file) => file.text)].filter(Boolean).join("\n\n");
-  const fileText = files.map((file) => file.name.replace(/\.[^.]+$/, "")).join(" ");
+  const assignmentFiles = files.filter((file) => file.role !== "Current draft");
+  const sourceText = [pastedText, ...assignmentFiles.map((file) => file.text)].filter(Boolean).join("\n\n");
+  const fileText = assignmentFiles.map((file) => file.name.replace(/\.[^.]+$/, "")).join(" ");
   const courseCode = sourceText.match(COURSE_CODE_PATTERN)?.[0] ?? fileText.match(COURSE_CODE_PATTERN)?.[0] ?? "COURSE";
   const wordLimit = Number(sourceText.match(WORD_LIMIT_PATTERN)?.[1]) || 0;
   const dueLabel = sourceText.match(DUE_PATTERN)?.[1]?.trim() ?? "Not provided";
   const titleLine = sourceText.match(/(?:assignment|assessment)\s*(?:title)?\s*[:-]\s*([^\n]{6,100})/i)?.[1]?.trim();
-  const instructionsName = files.find((file) => file.role === "Assignment instructions")?.name.replace(/\.[^.]+$/, "");
+  const instructionsName = assignmentFiles.find((file) => file.role === "Assignment instructions")?.name.replace(/\.[^.]+$/, "");
   const title = titleLine ?? instructionsName ?? "Untitled assignment";
   const lower = sourceText.toLowerCase();
   const type = /reflection/.test(lower) ? "Reflective assignment" : /essay/.test(lower) ? "Essay" : /presentation/.test(lower) ? "Presentation" : "Assignment";
@@ -377,7 +390,7 @@ function guidanceForHeading(heading: string, requirements: Requirement[]) {
 
 function createBlocks(assignment: Assignment, choice: StructureChoice): WritingBlock[] {
   if (choice === "self") {
-    return [{ id: uid("block"), heading: "Your draft", headingSource: "simplifii", body: "", guidanceIds: assignment.requirements.map((requirement) => requirement.id) }];
+    return [{ id: uid("block"), heading: "", headingSource: "student", body: "", guidanceIds: assignment.requirements.map((requirement) => requirement.id) }];
   }
 
   return STRUCTURED_HEADINGS.map((heading) => ({
@@ -434,7 +447,7 @@ function wordCount(text: string) {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
 }
 
-async function requestAi<T>(action: "extract" | "structure" | "allocate" | "analyse", input: unknown): Promise<T> {
+async function requestAi<T>(action: "extract" | "structure" | "structure-draft" | "allocate" | "analyse", input: unknown): Promise<T> {
   const response = await fetch("/api/ai", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -835,7 +848,39 @@ function ReviewScreen({ assignment, files, onBack, onContinue, assignmentMenu }:
   );
 }
 
-function ChoiceScreen({ choice, onChoice, onBack, onContinue, isStructuring, error, assignmentMenu }: { choice: StructureChoice; onChoice: (choice: StructureChoice) => void; onBack: () => void; onContinue: () => void; isStructuring: boolean; error: string; assignmentMenu: AssignmentMenuProps }) {
+function ChoiceScreen({
+  choice,
+  draftText,
+  hasDraftFile,
+  hasReadableDraftFile,
+  hasDraft,
+  onChoice,
+  onDraftText,
+  onBack,
+  onContinue,
+  isStructuring,
+  error,
+  assignmentMenu,
+}: {
+  choice: StructureChoice;
+  draftText: string;
+  hasDraftFile: boolean;
+  hasReadableDraftFile: boolean;
+  hasDraft: boolean;
+  onChoice: (choice: StructureChoice) => void;
+  onDraftText: (value: string) => void;
+  onBack: () => void;
+  onContinue: () => void;
+  isStructuring: boolean;
+  error: string;
+  assignmentMenu: AssignmentMenuProps;
+}) {
+  const draftHelper = hasReadableDraftFile && !draftText.trim()
+    ? "A readable draft file is already attached. Paste here only if this is a newer version."
+    : hasDraftFile && !draftText.trim()
+      ? "A draft file is attached. Paste its text here so Simplifii can preserve the exact wording in blocks."
+      : "Paste anything you have written so far. Simplifii will keep your wording and carry it into the workspace.";
+
   return (
     <div className="setup-shell">
       <ImportHeader assignmentMenu={assignmentMenu} />
@@ -847,24 +892,39 @@ function ChoiceScreen({ choice, onChoice, onBack, onContinue, isStructuring, err
           <p>Both choices open the same writing workspace. Only the starting blocks change.</p>
         </section>
 
+        <section className="review-card draft-start-card" aria-labelledby="existing-draft-label">
+          <label className="paste-label" id="existing-draft-label" htmlFor="existing-draft">Existing draft (optional)</label>
+          <p id="existing-draft-helper">{draftHelper}</p>
+          <textarea
+            id="existing-draft"
+            className="paste-area draft-start-area"
+            value={draftText}
+            maxLength={MAX_EXISTING_DRAFT_CHARACTERS}
+            disabled={isStructuring}
+            aria-describedby="existing-draft-helper"
+            onChange={(event) => onDraftText(event.target.value)}
+            placeholder="Paste your draft here…"
+          />
+        </section>
+
         <div className="choice-grid" role="radiogroup" aria-label="Starting structure">
-          <button className={`choice-card${choice === "simplifii" ? " selected" : ""}`} role="radio" aria-checked={choice === "simplifii"} type="button" onClick={() => onChoice("simplifii")}>
+          <button className={`choice-card${choice === "simplifii" ? " selected" : ""}`} role="radio" aria-checked={choice === "simplifii"} type="button" disabled={isStructuring} onClick={() => onChoice("simplifii")}>
             <span className="choice-radio" aria-hidden="true"><i /></span>
             <span className="choice-visual blocks-visual" aria-hidden="true"><i /><i /><i /></span>
-            <strong>Simplifii structures it</strong>
-            <span>Simplifii creates the blocks and places the extracted guidance where it is most useful.</span>
+            <strong>{hasDraft ? "Simplifii structures my draft" : "Simplifii structures it"}</strong>
+            <span>{hasDraft ? "Your existing writing is placed inside blocks without being rewritten, and the extracted guidance follows it." : "Simplifii creates the blocks and places the extracted guidance where it is most useful."}</span>
           </button>
-          <button className={`choice-card${choice === "self" ? " selected" : ""}`} role="radio" aria-checked={choice === "self"} type="button" onClick={() => onChoice("self")}>
+          <button className={`choice-card${choice === "self" ? " selected" : ""}`} role="radio" aria-checked={choice === "self"} type="button" disabled={isStructuring} onClick={() => onChoice("self")}>
             <span className="choice-radio" aria-hidden="true"><i /></span>
             <span className="choice-visual page-visual" aria-hidden="true"><i /><i /><i /></span>
-            <strong>I’ll structure it myself</strong>
-            <span>Begin with one block containing all the guidance. Add another block with + whenever it helps.</span>
+            <strong>{hasDraft ? "Keep my draft in one block" : "I’ll structure it myself"}</strong>
+            <span>{hasDraft ? "Your complete draft starts in one block with all the guidance. Add another block with + whenever it helps." : "Begin with one block containing all the guidance. Add another block with + whenever it helps."}</span>
           </button>
         </div>
 
         <div className="choice-actions">
           <span>{error ? <span className="inline-error" role="alert">{error}</span> : "Nothing about your assignment changes. This only decides the first view."}</span>
-          <button className="primary-button" type="button" disabled={isStructuring} onClick={onContinue}>{isStructuring ? "Creating…" : "Create workspace"}</button>
+          <button className="primary-button" type="button" disabled={isStructuring} onClick={onContinue}>{isStructuring ? (hasDraft ? "Structuring draft…" : "Creating…") : "Create workspace"}</button>
         </div>
       </main>
     </div>
@@ -1091,8 +1151,10 @@ function WorkspaceApp() {
   const [stage, setStage] = useState<Stage>("import");
   const [files, setFiles] = useState<ImportedFile[]>([]);
   const [pastedText, setPastedText] = useState("");
+  const [draftText, setDraftText] = useState("");
   const [assignment, setAssignment] = useState<Assignment>(DEFAULT_ASSIGNMENT);
   const [choice, setChoice] = useState<StructureChoice>("simplifii");
+  const [structurePlan, setStructurePlan] = useState<StructurePlanBlock[]>([]);
   const [blocks, setBlocks] = useState<WritingBlock[]>([]);
   const [view, setView] = useState<ViewMode>("guide");
   const [analysis, setAnalysis] = useState<AnalysisState>("idle");
@@ -1117,14 +1179,22 @@ function WorkspaceApp() {
   const cacheWritableRef = useRef(true);
   const assignmentEpoch = useRef(0);
   const importRevision = useRef(0);
+  const draftRevision = useRef(0);
   const extractionRevision = useRef(0);
   const documentRevision = useRef(0);
   const guidanceRequest = useRef(0);
   const structureRequest = useRef(0);
 
+  const attachedDraftText = useMemo(() => files
+    .filter((file) => file.role === "Current draft" && file.text.trim())
+    .map((file) => file.text)
+    .join("\n\n"), [files]);
+  const startingDraft = draftText.trim() ? draftText : attachedDraftText;
+
   const restoreAssignment = useCallback((record: CachedAssignment) => {
     assignmentEpoch.current += 1;
     importRevision.current = 0;
+    draftRevision.current = 0;
     extractionRevision.current = 0;
     documentRevision.current = 0;
     guidanceRequest.current += 1;
@@ -1132,8 +1202,10 @@ function WorkspaceApp() {
     setStage(record.stage);
     setFiles(record.files);
     setPastedText(record.pastedText);
+    setDraftText(record.draftText ?? "");
     setAssignment(record.assignment);
     setChoice(record.choice);
+    setStructurePlan(record.structurePlan ?? []);
     setBlocks(record.blocks);
     setView(record.view);
     setAnalysis(record.analysisResult ? "complete" : "idle");
@@ -1179,13 +1251,15 @@ function WorkspaceApp() {
       stage,
       files,
       pastedText,
+      draftText,
       assignment,
       choice,
+      structurePlan,
       blocks,
       view,
       analysisResult,
     };
-  }, [activeAssignmentId, analysisResult, assignment, blocks, choice, files, pastedText, stage, view]);
+  }, [activeAssignmentId, analysisResult, assignment, blocks, choice, draftText, files, pastedText, stage, structurePlan, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1280,6 +1354,17 @@ function WorkspaceApp() {
     setPastedText(value);
   };
 
+  const changeDraftText = (value: string) => {
+    draftRevision.current += 1;
+    setDraftText(value);
+    setStructureError("");
+  };
+
+  const changeStructureChoice = (value: StructureChoice) => {
+    setChoice(value);
+    setStructureError("");
+  };
+
   const removeFile = (id: string) => {
     importRevision.current += 1;
     setFiles((current) => current.filter((file) => file.id !== id));
@@ -1295,7 +1380,9 @@ function WorkspaceApp() {
     try {
       const extracted = await requestAi<AiExtraction>("extract", {
         sourceText: pastedText,
-        files: files.map((file) => ({ name: file.name, role: file.role, text: file.text, mediaType: file.mediaType, dataUrl: file.dataUrl })),
+        files: files
+          .filter((file) => file.role !== "Current draft")
+          .map((file) => ({ name: file.name, role: file.role, text: file.text, mediaType: file.mediaType, dataUrl: file.dataUrl })),
       });
       if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originImportRevision !== importRevision.current) return;
       const requirements = extracted.requirements
@@ -1328,6 +1415,7 @@ function WorkspaceApp() {
         requirements: requirements.length ? requirements : fallback.requirements,
         criteria: criteria.length ? criteria : fallback.criteria,
       });
+      setStructurePlan([]);
       extractionRevision.current += 1;
       setStage("review");
     } catch (error) {
@@ -1341,43 +1429,96 @@ function WorkspaceApp() {
 
   const createWorkspace = async () => {
     setStructureError("");
-    if (choice === "self") {
-      documentRevision.current += 1;
-      setBlocks(createBlocks(assignment, choice));
-      setStage("workspace");
-      setView("guide");
+    if (startingDraft.length > MAX_EXISTING_DRAFT_CHARACTERS) {
+      setStructureError("That draft is too long to structure safely in one pass. Use a draft under 120,000 characters.");
       return;
     }
-
     const originId = activeAssignmentIdRef.current;
     const originEpoch = assignmentEpoch.current;
+    const originImportRevision = importRevision.current;
+    const originDraftRevision = draftRevision.current;
     const originExtractionRevision = extractionRevision.current;
     const requestId = ++structureRequest.current;
     setIsStructuring(true);
     try {
-      const result = await requestAi<{ blocks: Array<{ heading: string; guidanceIds: string[] }> }>("structure", { assignment });
-      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originExtractionRevision !== extractionRevision.current || requestId !== structureRequest.current) return;
+      let result: { blocks: StructurePlanBlock[] };
+      try {
+        result = await requestAi<{ blocks: StructurePlanBlock[] }>("structure", { assignment });
+      } catch (error) {
+        if (choice !== "self") throw error;
+        result = { blocks: createBlocks(assignment, "simplifii").map(({ heading, guidanceIds }) => ({ heading, guidanceIds })) };
+      }
+      if (originId !== activeAssignmentIdRef.current
+        || originEpoch !== assignmentEpoch.current
+        || originImportRevision !== importRevision.current
+        || originDraftRevision !== draftRevision.current
+        || originExtractionRevision !== extractionRevision.current
+        || requestId !== structureRequest.current) return;
+
       const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
-      const structuredBlocks = result.blocks
+      let plannedBlocks = result.blocks
         .filter((block) => block.heading.trim())
         .slice(0, 8)
         .map((block) => {
           const guidanceIds = [...new Set(block.guidanceIds.filter((id) => allowedIds.has(id)))];
           return {
-            id: uid("block"),
             heading: block.heading.trim(),
-            headingSource: "simplifii" as const,
-            body: "",
             guidanceIds: guidanceIds.length ? guidanceIds : guidanceForHeading(block.heading, assignment.requirements),
           };
         });
-      if (!structuredBlocks.length) throw new Error("Simplifii did not find a useful structure. Try reading the assignment again.");
+
+      if (!plannedBlocks.length && choice === "self") {
+        plannedBlocks = createBlocks(assignment, "simplifii").map(({ heading, guidanceIds }) => ({ heading, guidanceIds }));
+      }
+      if (!plannedBlocks.length) throw new Error("Simplifii did not find a useful structure. Try reading the assignment again.");
+
+      const allGuidanceIds = assignment.requirements.map((requirement) => requirement.id);
+      let nextBlocks: WritingBlock[];
+      if (choice === "self") {
+        const draftBlock = projectDraftIntoOneBlock(startingDraft, allGuidanceIds);
+        nextBlocks = [{ id: uid("block"), heading: draftBlock.heading, headingSource: "student", body: draftBlock.body, guidanceIds: draftBlock.guidanceIds }];
+      } else if (startingDraft.trim()) {
+        const segments = segmentDraft(startingDraft);
+        const draftResult = await requestAi<{ blocks: DraftGrouping[] }>("structure-draft", {
+          assignment,
+          plannedBlocks,
+          segments,
+        });
+        if (originId !== activeAssignmentIdRef.current
+          || originEpoch !== assignmentEpoch.current
+          || originImportRevision !== importRevision.current
+          || originDraftRevision !== draftRevision.current
+          || originExtractionRevision !== extractionRevision.current
+          || requestId !== structureRequest.current) return;
+
+        const groupings = draftResult.blocks.map((block) => ({
+          segmentIds: block.segmentIds,
+          guidanceIds: [...new Set(block.guidanceIds.filter((id) => allowedIds.has(id)))],
+        }));
+        nextBlocks = projectDraftIntoBlocks(startingDraft, groupings, allGuidanceIds).map((block) => ({
+          id: uid("block"),
+          heading: block.heading,
+          headingSource: "student" as const,
+          body: block.body,
+          guidanceIds: block.guidanceIds,
+        }));
+      } else {
+        nextBlocks = plannedBlocks.map((block) => ({ id: uid("block"), heading: block.heading, headingSource: "simplifii", body: "", guidanceIds: block.guidanceIds }));
+      }
+
+      if (!nextBlocks.length) throw new Error("Simplifii could not place the draft into blocks. Your writing is still safe on this screen.");
       documentRevision.current += 1;
-      setBlocks(structuredBlocks);
+      setStructurePlan(plannedBlocks);
+      setBlocks(nextBlocks);
       setStage("workspace");
       setView("guide");
     } catch (error) {
-      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originExtractionRevision === extractionRevision.current && requestId === structureRequest.current) {
+      if (originId === activeAssignmentIdRef.current
+        && originEpoch === assignmentEpoch.current
+        && originImportRevision === importRevision.current
+        && originDraftRevision === draftRevision.current
+        && originExtractionRevision === extractionRevision.current
+        && requestId === structureRequest.current) {
         setStructureError(error instanceof Error ? error.message : "Simplifii could not create the blocks.");
       }
     } finally {
@@ -1442,6 +1583,7 @@ function WorkspaceApp() {
       const result = await requestAi<{ allocations: Array<{ blockId: string; guidanceIds: string[] }> }>("allocate", {
         requirements: assignment.requirements,
         blocks: locallyAllocated,
+        plannedBlocks: structurePlan,
       });
       if (requestId !== guidanceRequest.current || originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) return;
       const allocationMap = new Map(result.allocations.map((allocation) => [allocation.blockId, allocation.guidanceIds]));
@@ -1509,7 +1651,22 @@ function WorkspaceApp() {
     return <ReviewScreen assignment={assignment} files={files} onBack={() => setStage("import")} onContinue={() => setStage("choice")} assignmentMenu={assignmentMenu} />;
   }
   if (stage === "choice") {
-    return <ChoiceScreen choice={choice} onChoice={setChoice} onBack={leaveStructureChoice} onContinue={createWorkspace} isStructuring={isStructuring} error={structureError} assignmentMenu={assignmentMenu} />;
+    return (
+      <ChoiceScreen
+        choice={choice}
+        draftText={draftText}
+        hasDraftFile={files.some((file) => file.role === "Current draft")}
+        hasReadableDraftFile={Boolean(attachedDraftText.trim())}
+        hasDraft={Boolean(startingDraft.trim())}
+        onChoice={changeStructureChoice}
+        onDraftText={changeDraftText}
+        onBack={leaveStructureChoice}
+        onContinue={createWorkspace}
+        isStructuring={isStructuring}
+        error={structureError}
+        assignmentMenu={assignmentMenu}
+      />
+    );
   }
   return (
     <Workspace

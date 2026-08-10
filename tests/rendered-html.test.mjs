@@ -74,8 +74,44 @@ test("invite code issues an expiring HttpOnly access cookie and protects AI", as
   }
 });
 
+test("places every word of an existing draft into blocks without rewriting it", async () => {
+  const {
+    blockTokens,
+    projectDraftIntoBlocks,
+    projectDraftIntoOneBlock,
+    segmentDraft,
+    writingTokens,
+  } = await import(new URL("../lib/draft-structure.ts", import.meta.url));
+  const draft = [
+    "Introduction",
+    "Sleep restriction affects attention. This paragraph explains why the question matters.",
+    "Evidence",
+    "Two studies report reduced accuracy. Two studies report reduced accuracy.",
+  ].join("\r\n\r\n");
+  const segments = segmentDraft(draft);
+  const blocks = projectDraftIntoBlocks(draft, [
+    { segmentIds: segments.slice(0, 2).map((segment) => segment.id), guidanceIds: ["context"] },
+    { segmentIds: segments.slice(2).map((segment) => segment.id), guidanceIds: ["evidence"] },
+  ], ["context", "evidence"]);
+
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0].heading, "Introduction");
+  assert.equal(blocks[1].heading, "Evidence");
+  assert.deepEqual(blockTokens(blocks), writingTokens(draft));
+
+  const oneBlock = projectDraftIntoOneBlock("The opening claim is clear. The student keeps writing here.", ["all-guidance"]);
+  assert.equal(oneBlock.heading, "The opening claim is clear.");
+  assert.equal(oneBlock.body, "The student keeps writing here.");
+  assert.deepEqual(oneBlock.guidanceIds, ["all-guidance"]);
+
+  const repaired = projectDraftIntoBlocks(draft, [
+    { segmentIds: [segments.at(-1).id, "not-a-real-segment", segments[0].id], guidanceIds: ["evidence"] },
+  ], ["all-guidance"]);
+  assert.deepEqual(blockTokens(repaired), writingTokens(draft));
+});
+
 test("keeps the approved P0 choices, local assignment cache, AI wiring and light-theme contract", async () => {
-  const [page, css, layout, packageJson, aiRoute, inviteRoute, inviteAccess, envExample, gitignore, browserCache, hostingConfig] = await Promise.all([
+  const [page, css, layout, packageJson, aiRoute, inviteRoute, inviteAccess, envExample, gitignore, browserCache, hostingConfig, draftStructure] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -87,6 +123,7 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
     readFile(new URL("../lib/browser-cache.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
+    readFile(new URL("../lib/draft-structure.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Simplifii structures it/);
@@ -107,6 +144,14 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.doesNotMatch(page, />Suggested</);
   assert.match(page, /fetch\("\/api\/ai"/);
   assert.match(page, /requestAi<DraftAnalysis>\("analyse"/);
+  assert.match(page, /Existing draft \(optional\)/);
+  assert.match(page, /Simplifii structures my draft/);
+  assert.match(page, /Keep my draft in one block/);
+  assert.match(page, /projectDraftIntoBlocks/);
+  assert.match(page, /projectDraftIntoOneBlock/);
+  assert.match(page, /"structure-draft"/);
+  assert.match(page, /plannedBlocks: structurePlan/);
+  assert.match(page, /file\.role !== "Current draft"/);
   assert.match(page, /import\("mammoth"\)/);
   assert.match(page, /reader\.readAsDataURL\(file\)/);
   assert.doesNotMatch(page, /AI_GATEWAY_API_KEY/);
@@ -144,6 +189,9 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(aiRoute, /createOpenAI/);
   assert.match(aiRoute, /process\.env\.OPENAI_API_KEY/);
   assert.match(aiRoute, /type: "file" as const/);
+  assert.match(aiRoute, /existing_draft_blocks/);
+  assert.match(aiRoute, /segmentIds/);
+  assert.match(aiRoute, /file\.role !== "Current draft"/);
   assert.match(aiRoute, /Never rewrite the student's prose/);
   assert.match(aiRoute, /checkInviteAccess/);
   assert.match(aiRoute, /status: 401/);
@@ -170,6 +218,9 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(gitignore, /^!\.env\.example$/m);
   assert.match(packageJson, /"ai"/);
   assert.match(packageJson, /"@ai-sdk\/openai"/);
+  assert.match(draftStructure, /projectDraftIntoBlocks/);
+  assert.match(draftStructure, /projectDraftIntoOneBlock/);
+  assert.match(draftStructure, /MAX_DRAFT_BLOCKS/);
 
   assert.match(css, /--bg:\s*#f6f5f2/);
   assert.match(css, /--card:\s*#ffffff/);
