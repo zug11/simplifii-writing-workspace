@@ -52,6 +52,7 @@ type Assignment = {
 type WritingBlock = {
   id: string;
   heading: string;
+  headingSource: "simplifii" | "student";
   body: string;
   guidanceIds: string[];
 };
@@ -248,31 +249,20 @@ function guidanceForHeading(heading: string, requirements: Requirement[]) {
 
 function createBlocks(assignment: Assignment, choice: StructureChoice): WritingBlock[] {
   if (choice === "self") {
-    return [{ id: uid("block"), heading: "Your draft", body: "", guidanceIds: assignment.requirements.map((requirement) => requirement.id) }];
+    return [{ id: uid("block"), heading: "Your draft", headingSource: "simplifii", body: "", guidanceIds: assignment.requirements.map((requirement) => requirement.id) }];
   }
 
   return STRUCTURED_HEADINGS.map((heading) => ({
     id: uid("block"),
     heading,
+    headingSource: "simplifii",
     body: "",
     guidanceIds: guidanceForHeading(heading, assignment.requirements),
   }));
 }
 
-function inferHeading(text: string, current: string) {
-  if (current !== "New section" || !text.trim()) return current;
-  const lower = text.toLowerCase();
-  if (/participant|procedure|method|materials|design/.test(lower)) return "Method";
-  if (/result|mean|accuracy|p\s*[=<]|significant/.test(lower)) return "Results";
-  if (/limitation|interpret|implication|alternative explanation/.test(lower)) return "Discussion";
-  if (/in conclusion|overall|taken together/.test(lower)) return "Conclusion";
-  if (/reference|doi|https?:\/\//.test(lower)) return "References";
-  if (/aim|hypoth|background|this report/.test(lower)) return "Introduction";
-  return current;
-}
-
 function reallocateGuidance(blocks: WritingBlock[], requirements: Requirement[]) {
-  const next = blocks.map((block) => ({ ...block, heading: inferHeading(block.body, block.heading), guidanceIds: [] as string[] }));
+  const next = blocks.map((block) => ({ ...block, guidanceIds: [] as string[] }));
 
   for (const requirement of requirements) {
     if (requirement.scope === "whole-document") {
@@ -546,7 +536,9 @@ function Workspace({
   blocks,
   view,
   analysis,
+  focusHeadingId,
   onView,
+  onHeading,
   onBody,
   onBlur,
   onInsert,
@@ -557,7 +549,9 @@ function Workspace({
   blocks: WritingBlock[];
   view: ViewMode;
   analysis: AnalysisState;
+  focusHeadingId: string | null;
   onView: (view: ViewMode) => void;
+  onHeading: (blockId: string, value: string) => void;
   onBody: (blockId: string, value: string) => void;
   onBlur: () => void;
   onInsert: (anchorId: string, position: "before" | "after") => void;
@@ -566,6 +560,11 @@ function Workspace({
 }) {
   const requirementMap = useMemo(() => new Map(assignment.requirements.map((requirement) => [requirement.id, requirement])), [assignment.requirements]);
   const totalWords = blocks.reduce((total, block) => total + wordCount(block.body), 0);
+
+  useEffect(() => {
+    if (!focusHeadingId) return;
+    document.querySelector<HTMLInputElement>(`[data-block-heading-id="${focusHeadingId}"]`)?.focus();
+  }, [focusHeadingId]);
 
   return (
     <div className="workspace-shell">
@@ -623,6 +622,7 @@ function Workspace({
                 {blocks.map((block, index) => {
                   const guidance = block.guidanceIds.map((id) => requirementMap.get(id)).filter((item): item is Requirement => Boolean(item));
                   const words = wordCount(block.body);
+                  const displayHeading = block.heading.trim() || "this block";
                   const status = words === 0 ? "empty" : words < 60 ? "priority" : words < 140 ? "attention" : "good";
                   const statusLabel = status === "empty" ? "Not started" : status === "priority" ? "Needs work" : status === "attention" ? "Needs attention" : "On track";
                   return (
@@ -632,7 +632,7 @@ function Workspace({
                         <div className="block-guide">
                           <div className="block-guide-top">
                             <span className="violet-dot" aria-hidden="true" />
-                            <span className="guide-title">GUIDE · {block.heading.toUpperCase()}</span>
+                            <span className="guide-title">GUIDE{block.heading.trim() ? ` · ${block.heading.trim().toUpperCase()}` : ""}</span>
                             <span className="guide-count">{guidance.length} things to hold</span>
                             <span className="block-status"><i />{statusLabel}</span>
                           </div>
@@ -642,18 +642,34 @@ function Workspace({
                           </div>
                         </div>
                         <div className="block-editor-wrap">
+                          {block.headingSource === "student" ? (
+                            <input
+                              className="block-heading-editor"
+                              data-block-heading-id={block.id}
+                              value={block.heading}
+                              onChange={(event) => onHeading(block.id, event.target.value)}
+                              onBlur={onBlur}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter") return;
+                                event.preventDefault();
+                                event.currentTarget.parentElement?.querySelector("textarea")?.focus();
+                              }}
+                              aria-label="Section heading"
+                              placeholder="Write the first sentence — this becomes the section heading"
+                            />
+                          ) : null}
                           <textarea
                             className="block-editor"
                             value={block.body}
                             onChange={(event) => onBody(block.id, event.target.value)}
                             onBlur={onBlur}
-                            aria-label={`${block.heading} draft text`}
-                            placeholder={`Write your ${block.heading.toLowerCase()} here…`}
+                            aria-label={`${displayHeading} draft text`}
+                            placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${displayHeading.toLowerCase()} here…`}
                           />
                           <div className="editor-footer"><span>B</span><span><em>I</em></span><span><u>U</u></span><i /> <small>{words} words</small></div>
                         </div>
                       </article>
-                      <PlusButton label={`Add a block below ${block.heading}`} onClick={() => onInsert(block.id, "after")} />
+                      <PlusButton label={`Add a block below ${displayHeading}`} onClick={() => onInsert(block.id, "after")} />
                     </div>
                   );
                 })}
@@ -669,13 +685,28 @@ function Workspace({
               <div className="draft-sections">
                 {blocks.map((block) => (
                   <section key={block.id}>
-                    <h2>{block.heading}</h2>
+                    {block.headingSource === "student" ? (
+                      <input
+                        className="draft-section-heading"
+                        data-block-heading-id={block.id}
+                        value={block.heading}
+                        onChange={(event) => onHeading(block.id, event.target.value)}
+                        onBlur={onBlur}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          event.currentTarget.parentElement?.querySelector("textarea")?.focus();
+                        }}
+                        aria-label="Section heading"
+                        placeholder="Write the first sentence — this becomes the section heading"
+                      />
+                    ) : <h2>{block.heading}</h2>}
                     <textarea
                       value={block.body}
                       onChange={(event) => onBody(block.id, event.target.value)}
                       onBlur={onBlur}
-                      aria-label={`${block.heading} draft text`}
-                      placeholder={`Write your ${block.heading.toLowerCase()} here…`}
+                      aria-label={`${block.heading.trim() || "This block"} draft text`}
+                      placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${block.heading.toLowerCase()} here…`}
                     />
                   </section>
                 ))}
@@ -697,6 +728,7 @@ export default function Home() {
   const [blocks, setBlocks] = useState<WritingBlock[]>([]);
   const [view, setView] = useState<ViewMode>("guide");
   const [analysis, setAnalysis] = useState<AnalysisState>("idle");
+  const [focusHeadingId, setFocusHeadingId] = useState<string | null>(null);
   const [saveLabel, setSaveLabel] = useState("Saved · just now");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -727,16 +759,25 @@ export default function Home() {
     saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
   };
 
+  const updateHeading = (blockId: string, value: string) => {
+    setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, heading: value } : block));
+    setSaveLabel("Saving…");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
+  };
+
   const insertBlock = (anchorId: string, position: "before" | "after") => {
+    const newBlockId = uid("block");
     setBlocks((current) => {
       const index = current.findIndex((block) => block.id === anchorId);
       if (index < 0) return current;
       const anchor = current[index];
-      const newBlock: WritingBlock = { id: uid("block"), heading: "New section", body: "", guidanceIds: [...anchor.guidanceIds] };
+      const newBlock: WritingBlock = { id: newBlockId, heading: "", headingSource: "student", body: "", guidanceIds: [...anchor.guidanceIds] };
       const next = [...current];
       next.splice(position === "before" ? index : index + 1, 0, newBlock);
       return next;
     });
+    setFocusHeadingId(newBlockId);
   };
 
   const analyse = () => {
@@ -759,7 +800,9 @@ export default function Home() {
       blocks={blocks}
       view={view}
       analysis={analysis}
+      focusHeadingId={focusHeadingId}
       onView={setView}
+      onHeading={updateHeading}
       onBody={updateBody}
       onBlur={() => setBlocks((current) => reallocateGuidance(current, assignment.requirements))}
       onInsert={insertBlock}

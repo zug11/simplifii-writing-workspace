@@ -42,6 +42,14 @@ test("keeps the approved P0 choices and light-theme contract", async () => {
   assert.match(page, /function insertBlock|const insertBlock/);
   assert.match(page, /reallocateGuidance/);
   assert.match(page, /guidanceIds: \[\.\.\.anchor\.guidanceIds\]/);
+  assert.match(page, /headingSource: "student"/);
+  assert.match(page, /heading: ""/);
+  assert.match(page, /className="block-heading-editor"/);
+  assert.match(page, /data-block-heading-id/);
+  assert.match(page, /this becomes the section heading/);
+  assert.doesNotMatch(page, /function inferHeading/);
+  assert.doesNotMatch(page, /heading: "New section"/);
+  assert.doesNotMatch(page, /GUIDE · \{displayHeading/);
   assert.match(page, /ViewMode = "guide" \| "full-draft"/);
   assert.doesNotMatch(page, />Required</);
   assert.doesNotMatch(page, />Suggested</);

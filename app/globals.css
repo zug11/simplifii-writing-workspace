@@ -265,7 +265,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .guidance-list span { max-width: 48%; display: inline-flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .guidance-list i { flex: none; width: 6px; height: 6px; margin-top: 5px; border: 1.3px solid var(--accent); border-radius: 50%; }
 .block-editor-wrap { padding: 2px 18px 0; }
+.block-heading-editor { width: 100%; padding: 13px 0 3px; border: 0; background: transparent; color: var(--text); font: 600 18px/1.45 Plus Jakarta Sans, sans-serif; }
+.block-heading-editor::placeholder { color: var(--muted-4); font-weight: 500; }
 .block-editor { width: 100%; min-height: 126px; resize: vertical; padding: 12px 0; border: 0; outline: none !important; background: transparent; color: var(--text-2); font: 400 17px/1.8 Atkinson Hyperlegible, Inter, sans-serif; }
+.block-heading-editor + .block-editor { padding-top: 7px; }
 .block-editor::placeholder { color: var(--muted-4); }
 .editor-footer { min-height: 39px; display: flex; align-items: center; gap: 15px; border-top: 1px solid var(--line-4); color: var(--muted-2); opacity: 0; transition: opacity 160ms; font: 600 12px Plus Jakarta Sans, sans-serif; }
 .writing-block:hover .editor-footer, .writing-block:focus-within .editor-footer { opacity: 1; }
@@ -285,6 +288,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .draft-sections { padding: 8px 40px 36px; }
 .draft-sections section { margin-top: 22px; }
 .draft-sections h2 { margin: 0 0 6px; font: 600 18px Plus Jakarta Sans, sans-serif; }
+.draft-section-heading { width: 100%; margin: 0 0 6px; padding: 0; border: 0; background: transparent; color: var(--text); font: 600 18px/1.45 Plus Jakarta Sans, sans-serif; }
+.draft-section-heading::placeholder { color: var(--muted-4); font-weight: 500; }
 .draft-sections textarea { width: 100%; min-height: 90px; resize: vertical; padding: 0; border: 0; outline: none !important; background: transparent; color: var(--text-2); font: 400 17px/1.8 Atkinson Hyperlegible, Inter, sans-serif; }
 .draft-sections textarea::placeholder { color: var(--muted-4); }
 
