@@ -2,6 +2,8 @@ const PRODUCTION_COOKIE = "__Host-simplifii-invite";
 const DEVELOPMENT_COOKIE = "simplifii_invite_v1";
 const INVITE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const MAX_CLOCK_SKEW_SECONDS = 60;
+const MIN_INVITE_CODE_LENGTH = 8;
+const MIN_SESSION_SECRET_LENGTH = 32;
 
 export type InviteAccessState = "granted" | "required" | "unconfigured";
 export type JsonReadResult<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
@@ -10,7 +12,7 @@ export type RequestValidationResult = { ok: true } | { ok: false; status: number
 function configuration() {
   const inviteCode = process.env.SIMPLIFII_INVITE_CODE?.trim() ?? "";
   const sessionSecret = process.env.SIMPLIFII_INVITE_SESSION_SECRET?.trim() ?? "";
-  if (inviteCode.length < 20 || sessionSecret.length < 32) return null;
+  if (inviteCode.length < MIN_INVITE_CODE_LENGTH || sessionSecret.length < MIN_SESSION_SECRET_LENGTH) return null;
   return { inviteCode, sessionSecret };
 }
 

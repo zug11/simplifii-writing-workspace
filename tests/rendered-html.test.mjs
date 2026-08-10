@@ -39,7 +39,7 @@ test("server-renders the Simplifii invite gate", async () => {
 });
 
 test("invite code issues an expiring HttpOnly access cookie and protects AI", async () => {
-  process.env.SIMPLIFII_INVITE_CODE = "test-invite-code-with-128-bit-shape";
+  process.env.SIMPLIFII_INVITE_CODE = "test-code-12";
   process.env.SIMPLIFII_INVITE_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
   const worker = await loadWorker();
 
