@@ -15,15 +15,34 @@ export type DraftContentBlock = {
 };
 
 const MAX_DRAFT_BLOCKS = 8;
+const SENTENCE_END = ".!?…";
+const SENTENCE_CLOSERS = "\"'”’)]";
 
 function nonEmpty(value: string) {
   return value.trim().length > 0;
 }
 
 function sentenceSegments(text: string) {
-  return (text.match(/[^.!?]+(?:[.!?]+[”’"')\]]*|$)/g) ?? [])
-    .map((sentence) => sentence.trim())
-    .filter(nonEmpty);
+  const sentences: string[] = [];
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (!SENTENCE_END.includes(text[index])) continue;
+    let end = index + 1;
+    while (end < text.length && `${SENTENCE_END}${SENTENCE_CLOSERS}`.includes(text[end])) end += 1;
+    if (end < text.length && !/\s/.test(text[end])) continue;
+    const sentence = text.slice(start, end).trim();
+    if (!/[\p{L}\p{N}]/u.test(sentence)) {
+      index = end - 1;
+      continue;
+    }
+    sentences.push(sentence);
+    start = end;
+    while (start < text.length && /\s/.test(text[start])) start += 1;
+    index = start - 1;
+  }
+  const remainder = text.slice(start).trim();
+  if (remainder) sentences.push(remainder);
+  return sentences;
 }
 
 export function segmentDraft(value: string): DraftSegment[] {
@@ -58,14 +77,15 @@ function looksLikeHeading(value: string) {
 
 function splitFirstSentence(value: string) {
   const text = value.trim();
-  const sentence = text.match(/^([\s\S]*?[.!?]+[”’"')\]]*)(?=\s|$)/)?.[1];
-  if (sentence && sentence.length <= 240) {
-    return { heading: sentence.trim(), remainder: text.slice(sentence.length).trimStart() };
+  const sentence = sentenceSegments(text)[0];
+  if (sentence && sentence.length < text.length && text.startsWith(sentence)) {
+    return { heading: sentence, remainder: text.slice(sentence.length).trimStart() };
   }
 
   if (text.length <= 180) return { heading: text, remainder: "" };
   const boundary = text.lastIndexOf(" ", 180);
-  const end = boundary > 40 ? boundary : 180;
+  if (boundary <= 40) return { heading: text, remainder: "" };
+  const end = boundary;
   return { heading: text.slice(0, end).trim(), remainder: text.slice(end).trimStart() };
 }
 

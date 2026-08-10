@@ -262,8 +262,10 @@ function classifyFile(name: string): FileRole {
   const lower = name.toLowerCase();
   if (/rubric|marking|criteria/.test(lower)) return "Marking criteria";
   if (/outline|course|syllabus/.test(lower)) return "Course context";
-  if (/draft|essay|report-v|submission/.test(lower)) return "Current draft";
-  if (/brief|assessment|assignment|guide|instructions/.test(lower)) return "Assignment instructions";
+  if (/brief|guide|instructions/.test(lower)) return "Assignment instructions";
+  if (/draft|report-v|submission/.test(lower)) return "Current draft";
+  if (/assessment|assignment/.test(lower)) return "Assignment instructions";
+  if (/essay/.test(lower)) return "Current draft";
   return "Supporting material";
 }
 

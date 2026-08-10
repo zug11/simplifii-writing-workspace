@@ -108,6 +108,17 @@ test("places every word of an existing draft into blocks without rewriting it", 
     { segmentIds: [segments.at(-1).id, "not-a-real-segment", segments[0].id], guidanceIds: ["evidence"] },
   ], ["all-guidance"]);
   assert.deepEqual(blockTokens(repaired), writingTokens(draft));
+
+  const punctuationDraft = `... Opening words continue. https://example.com/${"x".repeat(220)}`;
+  const punctuationBlock = projectDraftIntoOneBlock(punctuationDraft, ["all-guidance"]);
+  assert.equal(punctuationBlock.heading, "... Opening words continue.");
+  assert.deepEqual(blockTokens([punctuationBlock]), writingTokens(punctuationDraft));
+
+  const unbrokenDraft = `https://example.com/${"x".repeat(400)}`;
+  const unbrokenBlock = projectDraftIntoOneBlock(unbrokenDraft, ["all-guidance"]);
+  assert.equal(unbrokenBlock.heading, unbrokenDraft);
+  assert.equal(unbrokenBlock.body, "");
+  assert.deepEqual(blockTokens([unbrokenBlock]), writingTokens(unbrokenDraft));
 });
 
 test("keeps the approved P0 choices, local assignment cache, AI wiring and light-theme contract", async () => {
@@ -152,6 +163,10 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(page, /"structure-draft"/);
   assert.match(page, /plannedBlocks: structurePlan/);
   assert.match(page, /file\.role !== "Current draft"/);
+  assert.match(
+    page,
+    /if \(\/brief\|guide\|instructions\/\.test\(lower\)\) return "Assignment instructions";\s+if \(\/draft\|report-v\|submission\/\.test\(lower\)\) return "Current draft";\s+if \(\/assessment\|assignment\/\.test\(lower\)\) return "Assignment instructions";\s+if \(\/essay\/\.test\(lower\)\) return "Current draft";/,
+  );
   assert.match(page, /import\("mammoth"\)/);
   assert.match(page, /reader\.readAsDataURL\(file\)/);
   assert.doesNotMatch(page, /AI_GATEWAY_API_KEY/);
