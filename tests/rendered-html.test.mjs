@@ -141,7 +141,8 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
 
   assert.match(aiRoute, /generateText/);
   assert.match(aiRoute, /Output\.object/);
-  assert.match(aiRoute, /process\.env\.AI_GATEWAY_API_KEY/);
+  assert.match(aiRoute, /createOpenAI/);
+  assert.match(aiRoute, /process\.env\.OPENAI_API_KEY/);
   assert.match(aiRoute, /type: "file" as const/);
   assert.match(aiRoute, /Never rewrite the student's prose/);
   assert.match(aiRoute, /checkInviteAccess/);
@@ -161,13 +162,14 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(inviteAccess, /HttpOnly/);
   assert.match(inviteAccess, /SameSite=Lax/);
   assert.doesNotMatch(inviteAccess, /NEXT_PUBLIC_/);
-  assert.match(envExample, /^AI_GATEWAY_API_KEY=/m);
-  assert.match(envExample, /^AI_MODEL=openai\/gpt-5\.6-terra/m);
+  assert.match(envExample, /^OPENAI_API_KEY=/m);
+  assert.match(envExample, /^AI_MODEL=gpt-5\.6-terra/m);
   assert.match(envExample, /^SIMPLIFII_INVITE_CODE=$/m);
   assert.match(envExample, /^SIMPLIFII_INVITE_SESSION_SECRET=$/m);
   assert.match(gitignore, /^\.env\*$/m);
   assert.match(gitignore, /^!\.env\.example$/m);
   assert.match(packageJson, /"ai"/);
+  assert.match(packageJson, /"@ai-sdk\/openai"/);
 
   assert.match(css, /--bg:\s*#f6f5f2/);
   assert.match(css, /--card:\s*#ffffff/);

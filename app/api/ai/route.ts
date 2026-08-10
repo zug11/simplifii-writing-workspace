@@ -1,4 +1,5 @@
 import { generateText, jsonSchema, Output } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 
 import { checkInviteAccess, readJsonBody, validateSameOriginJsonRequest } from "@/lib/invite-access";
 
@@ -72,7 +73,7 @@ type AnalysisOutput = {
   }>;
 };
 
-const DEFAULT_MODEL = "openai/gpt-5.6-terra";
+const DEFAULT_MODEL = "gpt-5.6-terra";
 const MAX_INPUT_CHARACTERS = 90_000;
 const MAX_AI_REQUEST_CHARACTERS = 35_000_000;
 const NO_STORE_HEADERS = { "cache-control": "private, no-store, max-age=0" };
@@ -182,10 +183,12 @@ const analysisSchema = jsonSchema<AnalysisOutput>({
 });
 
 function requireConfiguration() {
-  if (!process.env.AI_GATEWAY_API_KEY?.trim()) {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
     throw new Error("AI_NOT_CONFIGURED");
   }
-  return process.env.AI_MODEL?.trim() || DEFAULT_MODEL;
+  const modelId = (process.env.AI_MODEL?.trim() || DEFAULT_MODEL).replace(/^openai\//, "");
+  return createOpenAI({ apiKey })(modelId);
 }
 
 function promptData(value: unknown) {
@@ -360,7 +363,7 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : "";
     if (message === "AI_NOT_CONFIGURED") {
       return Response.json(
-        { error: "AI is not configured yet. Add your AI Gateway key to .env.local, then restart Simplifii." },
+        { error: "AI is not configured yet. Add your OpenAI API key to .env.local, then restart Simplifii." },
         { status: 503, headers: NO_STORE_HEADERS },
       );
     }
