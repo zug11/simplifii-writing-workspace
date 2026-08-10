@@ -16,26 +16,73 @@ async function render() {
   );
 }
 
-test("server-renders the Simplifii import flow", async () => {
+async function loadWorker() {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `worker-${process.pid}-${Date.now()}-${Math.random()}`);
+  return (await import(workerUrl.href)).default;
+}
+
+const workerEnv = { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } };
+const workerContext = { waitUntil() {}, passThroughOnException() {} };
+
+test("server-renders the Simplifii invite gate", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<title>Simplifii — Assignment workspace<\/title>/i);
-  assert.match(html, /Add what your course gave you\./);
-  assert.match(html, /Assignment material/);
-  assert.match(html, /Read assignment/);
+  assert.match(html, /Opening Simplifii…/);
+  assert.match(html, /Checking access/);
+  assert.match(html, /No account is needed|Checking whether this browser already has early access/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
+test("invite code issues an expiring HttpOnly access cookie and protects AI", async () => {
+  process.env.SIMPLIFII_INVITE_CODE = "test-invite-code-with-128-bit-shape";
+  process.env.SIMPLIFII_INVITE_SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
+  const worker = await loadWorker();
+
+  try {
+    const entry = await worker.fetch(new Request("http://localhost/api/invite", {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ code: process.env.SIMPLIFII_INVITE_CODE }),
+    }), workerEnv, workerContext);
+    assert.equal(entry.status, 200);
+    const setCookie = entry.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /simplifii_invite_v1=/);
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Lax/);
+    const cookie = setCookie.split(";")[0];
+
+    const status = await worker.fetch(new Request("http://localhost/api/invite", { headers: { cookie } }), workerEnv, workerContext);
+    assert.equal(status.status, 200);
+    assert.deepEqual(await status.json(), { granted: true });
+    assert.match(status.headers.get("cache-control") ?? "", /no-store/);
+    assert.match(status.headers.get("vary") ?? "", /(?:^|,\s*)Cookie(?:,|$)/);
+
+    const blockedAi = await worker.fetch(new Request("http://localhost/api/ai", {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ action: "analyse", input: {} }),
+    }), workerEnv, workerContext);
+    assert.equal(blockedAi.status, 401);
+  } finally {
+    delete process.env.SIMPLIFII_INVITE_CODE;
+    delete process.env.SIMPLIFII_INVITE_SESSION_SECRET;
+  }
+});
+
 test("keeps the approved P0 choices, local assignment cache, AI wiring and light-theme contract", async () => {
-  const [page, css, layout, packageJson, aiRoute, envExample, gitignore, browserCache, hostingConfig] = await Promise.all([
+  const [page, css, layout, packageJson, aiRoute, inviteRoute, inviteAccess, envExample, gitignore, browserCache, hostingConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/invite/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/invite-access.ts", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
     readFile(new URL("../lib/browser-cache.ts", import.meta.url), "utf8"),
@@ -72,6 +119,12 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(page, /Local cache needs attention/);
   assert.match(page, /analysisResult/);
   assert.match(page, /assignmentMenu=/);
+  assert.match(page, /function InviteBoundary/);
+  assert.match(page, /Enter your invite code\./);
+  assert.match(page, /No account is needed/);
+  assert.match(page, /type="password"/);
+  assert.match(page, /fetch\("\/api\/invite"/);
+  assert.doesNotMatch(page, /SIMPLIFII_INVITE_CODE/);
 
   assert.match(browserCache, /simplifii-local-workspaces-v1/);
   assert.match(browserCache, /window\.caches\.open/);
@@ -91,8 +144,27 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(aiRoute, /process\.env\.AI_GATEWAY_API_KEY/);
   assert.match(aiRoute, /type: "file" as const/);
   assert.match(aiRoute, /Never rewrite the student's prose/);
+  assert.match(aiRoute, /checkInviteAccess/);
+  assert.match(aiRoute, /status: 401/);
+  assert.match(inviteRoute, /export async function GET/);
+  assert.match(inviteRoute, /export async function POST/);
+  assert.match(inviteRoute, /set-cookie/);
+  assert.match(inviteRoute, /cache-control/);
+  assert.match(inviteAccess, /process\.env\.SIMPLIFII_INVITE_CODE/);
+  assert.match(inviteAccess, /process\.env\.SIMPLIFII_INVITE_SESSION_SECRET/);
+  assert.match(inviteAccess, /crypto\.subtle\.digest/);
+  assert.match(inviteAccess, /name: "HMAC"/);
+  assert.match(inviteAccess, /parsed\.exp > now/);
+  assert.match(inviteAccess, /constantTimeEqual/);
+  assert.match(inviteAccess, /__Host-simplifii-invite/);
+  assert.match(inviteAccess, /requestOrigin/);
+  assert.match(inviteAccess, /HttpOnly/);
+  assert.match(inviteAccess, /SameSite=Lax/);
+  assert.doesNotMatch(inviteAccess, /NEXT_PUBLIC_/);
   assert.match(envExample, /^AI_GATEWAY_API_KEY=/m);
   assert.match(envExample, /^AI_MODEL=openai\/gpt-5\.6-terra/m);
+  assert.match(envExample, /^SIMPLIFII_INVITE_CODE=$/m);
+  assert.match(envExample, /^SIMPLIFII_INVITE_SESSION_SECRET=$/m);
   assert.match(gitignore, /^\.env\*$/m);
   assert.match(gitignore, /^!\.env\.example$/m);
   assert.match(packageJson, /"ai"/);

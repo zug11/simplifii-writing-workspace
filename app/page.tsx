@@ -3,6 +3,7 @@
 import {
   type ChangeEvent,
   type DragEvent,
+  type FormEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -440,6 +441,7 @@ async function requestAi<T>(action: "extract" | "structure" | "allocate" | "anal
     body: JSON.stringify({ action, input }),
   });
   const payload = await response.json() as T & { error?: string };
+  if (response.status === 401 && typeof window !== "undefined") window.location.reload();
   if (!response.ok) throw new Error(payload.error || "Simplifii could not complete that AI step.");
   return payload;
 }
@@ -451,6 +453,106 @@ function Brand() {
       <span>Simplifii</span>
     </div>
   );
+}
+
+function InviteGate({ checking = false, onGranted }: { checking?: boolean; onGranted?: () => void }) {
+  const [code, setCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!code.trim()) {
+      setError("Enter the invite code.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/invite", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const payload = await response.json() as { granted?: boolean; error?: string };
+      if (!response.ok || !payload.granted) throw new Error(payload.error || "That invite code could not be checked.");
+      setCode("");
+      onGranted?.();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "That invite code could not be checked.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="invite-shell">
+      <section className="invite-card" aria-labelledby="invite-heading">
+        <div className="invite-mark" aria-hidden="true">S</div>
+        <div className="invite-copy">
+          <h1 id="invite-heading">{checking ? "Opening Simplifii…" : "Enter your invite code."}</h1>
+          <p>{checking ? "Checking whether this browser already has early access." : "No account is needed. The shared code only unlocks this early build on your browser."}</p>
+        </div>
+        {checking ? (
+          <button className="invite-submit invite-checking" type="button" disabled aria-live="polite">Checking access</button>
+        ) : (
+          <form className="invite-form" onSubmit={submit}>
+            <label className="invite-label" htmlFor="invite-code">Invite code</label>
+            <div className="invite-input-wrap">
+              <input
+                className="invite-input"
+                id="invite-code"
+                type="password"
+                value={code}
+                autoComplete="one-time-code"
+                autoCapitalize="none"
+                spellCheck={false}
+                maxLength={256}
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? "invite-error" : "invite-note"}
+                placeholder="Enter code"
+                onChange={(event) => {
+                  setCode(event.target.value);
+                  if (error) setError("");
+                }}
+              />
+            </div>
+            {error ? <p className="invite-error" id="invite-error" role="alert">{error}</p> : null}
+            <button className={`invite-submit${submitting ? " invite-checking" : ""}`} type="submit" disabled={submitting}>
+              {submitting ? "Checking code" : "Open Simplifii"}
+            </button>
+          </form>
+        )}
+        <p className="invite-footnote" id="invite-note">Access is remembered for 30 days. Your local assignment workspace stays in this browser.</p>
+      </section>
+    </main>
+  );
+}
+
+function InviteBoundary() {
+  const [state, setState] = useState<"checking" | "required" | "granted">("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/invite", { cache: "no-store", credentials: "same-origin" })
+      .then(async (response) => {
+        const payload = await response.json() as { granted?: boolean };
+        if (!cancelled) setState(response.ok && payload.granted ? "granted" : "required");
+      })
+      .catch(() => {
+        if (!cancelled) setState("required");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (state === "checking") return <InviteGate checking />;
+  if (state === "required") return <InviteGate onGranted={() => setState("granted")} />;
+  return <WorkspaceApp />;
 }
 
 function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignments, onSelect, onCreate }: AssignmentMenuProps) {
@@ -985,7 +1087,7 @@ function Workspace({
   );
 }
 
-export default function Home() {
+function WorkspaceApp() {
   const [stage, setStage] = useState<Stage>("import");
   const [files, setFiles] = useState<ImportedFile[]>([]);
   const [pastedText, setPastedText] = useState("");
@@ -1428,4 +1530,8 @@ export default function Home() {
       saveLabel={saveLabel}
     />
   );
+}
+
+export default function Home() {
+  return <InviteBoundary />;
 }

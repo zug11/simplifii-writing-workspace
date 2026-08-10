@@ -1,5 +1,7 @@
 import { generateText, jsonSchema, Output } from "ai";
 
+import { checkInviteAccess, readJsonBody, validateSameOriginJsonRequest } from "@/lib/invite-access";
+
 type RequirementInput = {
   id: string;
   text: string;
@@ -72,6 +74,8 @@ type AnalysisOutput = {
 
 const DEFAULT_MODEL = "openai/gpt-5.6-terra";
 const MAX_INPUT_CHARACTERS = 90_000;
+const MAX_AI_REQUEST_CHARACTERS = 35_000_000;
+const NO_STORE_HEADERS = { "cache-control": "private, no-store, max-age=0" };
 
 const extractionSchema = jsonSchema<ExtractionOutput>({
   type: "object",
@@ -316,38 +320,54 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
 }
 
 export async function POST(request: Request) {
+  const requestValidation = validateSameOriginJsonRequest(request, MAX_AI_REQUEST_CHARACTERS);
+  if (!requestValidation.ok) {
+    return Response.json({ error: requestValidation.error }, { status: requestValidation.status, headers: NO_STORE_HEADERS });
+  }
+
+  const inviteAccess = await checkInviteAccess(request);
+  if (inviteAccess === "unconfigured") {
+    return Response.json({ error: "Invite access is not configured yet." }, { status: 503, headers: NO_STORE_HEADERS });
+  }
+  if (inviteAccess !== "granted") {
+    return Response.json({ error: "Enter your invite code to use Simplifii." }, { status: 401, headers: NO_STORE_HEADERS });
+  }
+
+  const parsedBody = await readJsonBody<{ action?: string; input?: unknown }>(request, MAX_AI_REQUEST_CHARACTERS);
+  if (!parsedBody.ok) return Response.json({ error: parsedBody.error }, { status: parsedBody.status, headers: NO_STORE_HEADERS });
+
   try {
-    const body = await request.json() as { action?: string; input?: unknown };
+    const body = parsedBody.value;
     if (!body.action || !body.input) {
-      return Response.json({ error: "The AI request was incomplete." }, { status: 400 });
+      return Response.json({ error: "The AI request was incomplete." }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
     if (body.action === "extract") {
-      return Response.json(await extractAssignment(body.input as Parameters<typeof extractAssignment>[0]));
+      return Response.json(await extractAssignment(body.input as Parameters<typeof extractAssignment>[0]), { headers: NO_STORE_HEADERS });
     }
     if (body.action === "structure") {
-      return Response.json(await structureAssignment(body.input as Parameters<typeof structureAssignment>[0]));
+      return Response.json(await structureAssignment(body.input as Parameters<typeof structureAssignment>[0]), { headers: NO_STORE_HEADERS });
     }
     if (body.action === "allocate") {
-      return Response.json(await allocateGuidance(body.input as Parameters<typeof allocateGuidance>[0]));
+      return Response.json(await allocateGuidance(body.input as Parameters<typeof allocateGuidance>[0]), { headers: NO_STORE_HEADERS });
     }
     if (body.action === "analyse") {
-      return Response.json(await analyseDraft(body.input as Parameters<typeof analyseDraft>[0]));
+      return Response.json(await analyseDraft(body.input as Parameters<typeof analyseDraft>[0]), { headers: NO_STORE_HEADERS });
     }
 
-    return Response.json({ error: "That AI action is not supported." }, { status: 400 });
+    return Response.json({ error: "That AI action is not supported." }, { status: 400, headers: NO_STORE_HEADERS });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message === "AI_NOT_CONFIGURED") {
       return Response.json(
         { error: "AI is not configured yet. Add your AI Gateway key to .env.local, then restart Simplifii." },
-        { status: 503 },
+        { status: 503, headers: NO_STORE_HEADERS },
       );
     }
     console.error("Simplifii AI request failed", message || "Unknown error");
     return Response.json(
       { error: "Simplifii could not complete that AI step. Your writing has not been changed." },
-      { status: 502 },
+      { status: 502, headers: NO_STORE_HEADERS },
     );
   }
 }

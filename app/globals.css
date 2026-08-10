@@ -187,6 +187,114 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 }
 .topbar-note { margin-left: auto; color: var(--muted-2); font: 500 14px Plus Jakarta Sans, sans-serif; }
 
+.invite-shell {
+  min-height: 100vh;
+  padding: 28px;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% -10%, rgba(109, 90, 224, 0.16), transparent 38%),
+    radial-gradient(circle at 8% 92%, rgba(168, 157, 248, 0.1), transparent 28%),
+    var(--bg);
+}
+.invite-card {
+  width: min(440px, 100%);
+  padding: 34px;
+  border: 1px solid var(--line-2);
+  border-radius: 24px;
+  background: var(--card);
+  box-shadow: 0 24px 70px var(--shadow), 0 5px 18px var(--shadow-soft);
+}
+.invite-mark {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent), #a89df8);
+  color: #ffffff;
+  box-shadow: 0 12px 30px rgba(109, 90, 224, 0.27);
+  font: 700 20px Plus Jakarta Sans, sans-serif;
+}
+.invite-copy { text-wrap: pretty; }
+.invite-copy h1 {
+  margin: 0;
+  color: var(--text);
+  font: 600 34px/1.14 Fraunces, Georgia, serif;
+  letter-spacing: -0.02em;
+}
+.invite-copy p {
+  margin: 11px 0 0;
+  color: var(--muted);
+  font: 400 15px/1.65 Inter, sans-serif;
+}
+.invite-form { margin-top: 25px; display: grid; gap: 10px; }
+.invite-label { color: var(--text-2); font: 600 13px Plus Jakarta Sans, sans-serif; }
+.invite-input-wrap { position: relative; }
+.invite-input {
+  width: 100%;
+  height: 50px;
+  padding: 0 15px;
+  border: 1px solid var(--line-3);
+  border-radius: 11px;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  font: 500 16px Plus Jakarta Sans, sans-serif;
+  letter-spacing: 0.035em;
+  transition: border-color 150ms, box-shadow 150ms, background 150ms;
+}
+.invite-input::placeholder { color: var(--muted-4); font-weight: 400; letter-spacing: 0; }
+.invite-input:hover { border-color: var(--line-5); }
+.invite-input:focus {
+  border-color: var(--accent);
+  background: var(--card);
+  box-shadow: 0 0 0 3px rgba(109, 90, 224, 0.13);
+}
+.invite-input[aria-invalid="true"] { border-color: var(--priority); box-shadow: 0 0 0 3px rgba(168, 69, 43, 0.1); }
+.invite-error {
+  margin: 0;
+  color: var(--priority);
+  font: 500 12px/1.5 Inter, sans-serif;
+}
+.invite-submit {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 3px;
+  padding: 10px 17px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(109, 90, 224, 0.22);
+  cursor: pointer;
+  font: 600 14px Plus Jakarta Sans, sans-serif;
+  transition: background 140ms, box-shadow 140ms, transform 140ms, opacity 140ms;
+}
+.invite-submit:hover:not(:disabled) { background: var(--accent-2); box-shadow: 0 12px 28px rgba(109, 90, 224, 0.28); transform: translateY(-1px); }
+.invite-submit:disabled { cursor: wait; opacity: 0.58; }
+.invite-footnote {
+  margin: 18px 0 0;
+  padding-top: 15px;
+  border-top: 1px solid var(--line-4);
+  color: var(--muted-3);
+  text-align: center;
+  font: 400 11px/1.5 Inter, sans-serif;
+}
+.invite-checking { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.invite-checking::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: invite-spin 700ms linear infinite;
+}
+
+@keyframes invite-spin { to { transform: rotate(360deg); } }
+
 .setup-shell { min-height: 100vh; background: radial-gradient(circle at 50% -15%, rgba(109, 90, 224, 0.12), transparent 36%), var(--bg); }
 .setup-main { width: min(768px, calc(100% - 40px)); margin: 0 auto; padding: 72px 0 100px; }
 .setup-intro { max-width: 650px; margin-bottom: 28px; }
@@ -424,6 +532,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   .document-identity strong { max-width: 230px; }
 }
 @media (max-width: 680px) {
+  .invite-shell { padding: 16px; }
+  .invite-card { padding: 26px 22px; border-radius: 20px; }
+  .invite-mark { margin-bottom: 19px; }
+  .invite-copy h1 { font-size: 30px; }
   .simple-topbar { gap: 9px; padding-inline: 12px; }
   .simple-topbar .topbar-note { display: none; }
   .setup-main, .choice-main { width: min(100% - 24px, 768px); padding-top: 44px; }
