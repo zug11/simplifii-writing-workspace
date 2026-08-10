@@ -14,7 +14,9 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "ai": "^7.0.58",
     "drizzle-orm": "0.45.2",
+    "mammoth": "^1.12.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

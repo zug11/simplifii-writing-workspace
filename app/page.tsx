@@ -21,6 +21,8 @@ type ImportedFile = {
   size: number;
   role: FileRole;
   text: string;
+  mediaType?: string;
+  dataUrl?: string;
 };
 
 type Requirement = {
@@ -55,6 +57,22 @@ type WritingBlock = {
   headingSource: "simplifii" | "student";
   body: string;
   guidanceIds: string[];
+};
+
+type AiExtraction = Omit<Assignment, "requirements" | "criteria"> & {
+  requirements: Array<Omit<Requirement, "id">>;
+  criteria: Array<Omit<Criterion, "id" | "tone">>;
+};
+
+type DraftAnalysis = {
+  summary: string;
+  highestLeverageCriterionId: string;
+  criteria: Array<{
+    criterionId: string;
+    tone: Criterion["tone"];
+    diagnosis: string;
+    action: string;
+  }>;
 };
 
 const RESEARCH_REQUIREMENTS: Requirement[] = [
@@ -126,6 +144,7 @@ const TEXT_FILE_PATTERN = /\.(txt|md|html|htm|csv|json)$/i;
 const COURSE_CODE_PATTERN = /\b[A-Z]{3,5}\d{3,4}\b/;
 const WORD_LIMIT_PATTERN = /(?:word\s*(?:count|limit)|maximum)\D{0,16}(\d{3,5})/i;
 const DUE_PATTERN = /(?:due(?:\s+date)?|submit(?:\s+by)?)\s*[:-]?\s*([^\n.]{4,48})/i;
+const MAX_AI_FILE_BYTES = 10 * 1024 * 1024;
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -142,8 +161,19 @@ function classifyFile(name: string): FileRole {
 
 async function readImportedFile(file: File): Promise<ImportedFile> {
   let text = "";
-  if (TEXT_FILE_PATTERN.test(file.name) || file.type.startsWith("text/")) {
+  let dataUrl: string | undefined;
+  if (/\.docx$/i.test(file.name)) {
+    const mammoth = (await import("mammoth")).default;
+    text = (await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })).value;
+  } else if (TEXT_FILE_PATTERN.test(file.name) || file.type.startsWith("text/")) {
     text = await file.text();
+  } else if ((/\.pdf$/i.test(file.name) || file.type.startsWith("image/")) && file.size <= MAX_AI_FILE_BYTES) {
+    dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result)));
+      reader.addEventListener("error", () => reject(reader.error));
+      reader.readAsDataURL(file);
+    });
   }
   return {
     id: uid("file"),
@@ -151,6 +181,8 @@ async function readImportedFile(file: File): Promise<ImportedFile> {
     size: file.size,
     role: classifyFile(file.name),
     text,
+    mediaType: file.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : undefined),
+    dataUrl,
   };
 }
 
@@ -169,7 +201,7 @@ function extractRequirements(text: string): Requirement[] {
     .filter((line) => /\b(must|should|required|include|demonstrate|explain|analyse|analyze|evaluate|discuss|describe|report|reference|cite)\b/i.test(line));
 
   const unique = [...new Set(lines)].slice(0, 8);
-  if (unique.length < 3) return RESEARCH_REQUIREMENTS;
+  if (unique.length < 3) return [];
 
   return unique.map((line, index) => {
     const words = line.toLowerCase().match(/[a-z]{5,}/g) ?? [];
@@ -198,20 +230,20 @@ function extractCriteria(text: string): Criterion[] {
       tone: criteria.length === 1 ? "priority" : "attention",
     });
   }
-  return criteria.length >= 2 ? criteria.slice(0, 8) : DEFAULT_CRITERIA;
+  return criteria.length >= 2 ? criteria.slice(0, 8) : [];
 }
 
 function extractAssignment(files: ImportedFile[], pastedText: string): Assignment {
   const sourceText = [pastedText, ...files.map((file) => file.text)].filter(Boolean).join("\n\n");
   const fileText = files.map((file) => file.name.replace(/\.[^.]+$/, "")).join(" ");
-  const courseCode = sourceText.match(COURSE_CODE_PATTERN)?.[0] ?? fileText.match(COURSE_CODE_PATTERN)?.[0] ?? DEFAULT_ASSIGNMENT.courseCode;
-  const wordLimit = Number(sourceText.match(WORD_LIMIT_PATTERN)?.[1]) || DEFAULT_ASSIGNMENT.wordLimit;
-  const dueLabel = sourceText.match(DUE_PATTERN)?.[1]?.trim() ?? DEFAULT_ASSIGNMENT.dueLabel;
+  const courseCode = sourceText.match(COURSE_CODE_PATTERN)?.[0] ?? fileText.match(COURSE_CODE_PATTERN)?.[0] ?? "COURSE";
+  const wordLimit = Number(sourceText.match(WORD_LIMIT_PATTERN)?.[1]) || 0;
+  const dueLabel = sourceText.match(DUE_PATTERN)?.[1]?.trim() ?? "Not provided";
   const titleLine = sourceText.match(/(?:assignment|assessment)\s*(?:title)?\s*[:-]\s*([^\n]{6,100})/i)?.[1]?.trim();
   const instructionsName = files.find((file) => file.role === "Assignment instructions")?.name.replace(/\.[^.]+$/, "");
-  const title = titleLine ?? instructionsName ?? DEFAULT_ASSIGNMENT.title;
+  const title = titleLine ?? instructionsName ?? "Untitled assignment";
   const lower = sourceText.toLowerCase();
-  const type = /reflection/.test(lower) ? "Reflective assignment" : /essay/.test(lower) ? "Essay" : /presentation/.test(lower) ? "Presentation" : DEFAULT_ASSIGNMENT.type;
+  const type = /reflection/.test(lower) ? "Reflective assignment" : /essay/.test(lower) ? "Essay" : /presentation/.test(lower) ? "Presentation" : "Assignment";
 
   return {
     title,
@@ -219,7 +251,7 @@ function extractAssignment(files: ImportedFile[], pastedText: string): Assignmen
     type,
     dueLabel,
     wordLimit,
-    task: firstMeaningfulLine(sourceText) ?? DEFAULT_ASSIGNMENT.task,
+    task: firstMeaningfulLine(sourceText) ?? "The task was not clear in the supplied material.",
     requirements: extractRequirements(sourceText),
     criteria: extractCriteria(sourceText),
   };
@@ -306,6 +338,17 @@ function wordCount(text: string) {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
 }
 
+async function requestAi<T>(action: "extract" | "structure" | "allocate" | "analyse", input: unknown): Promise<T> {
+  const response = await fetch("/api/ai", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action, input }),
+  });
+  const payload = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || "Simplifii could not complete that AI step.");
+  return payload;
+}
+
 function Brand() {
   return (
     <div className="brand" aria-label="Simplifii">
@@ -331,6 +374,8 @@ function ImportScreen({
   onPaste,
   onRemove,
   onContinue,
+  isReading,
+  error,
 }: {
   files: ImportedFile[];
   pastedText: string;
@@ -338,6 +383,8 @@ function ImportScreen({
   onPaste: (value: string) => void;
   onRemove: (id: string) => void;
   onContinue: () => void;
+  isReading: boolean;
+  error: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -379,7 +426,7 @@ function ImportScreen({
               className="visually-hidden"
               type="file"
               multiple
-              accept=".pdf,.doc,.docx,.txt,.md,.html,image/*"
+              accept=".pdf,.docx,.txt,.md,.html,image/*"
               onChange={(event: ChangeEvent<HTMLInputElement>) => onFiles([...(event.target.files ?? [])])}
             />
             <span className="upload-icon" aria-hidden="true"><span /></span>
@@ -414,8 +461,8 @@ function ImportScreen({
           />
 
           <div className="setup-actions">
-            <span>Start with what you have. You can add more material later.</span>
-            <button className="primary-button" type="button" disabled={!files.length && !pastedText.trim()} onClick={onContinue}>Read assignment</button>
+            <span>{error ? <span className="inline-error" role="alert">{error}</span> : "Start with what you have. You can add more material later."}</span>
+            <button className="primary-button" type="button" disabled={isReading || (!files.length && !pastedText.trim())} onClick={onContinue}>{isReading ? "Reading…" : "Read assignment"}</button>
           </div>
         </section>
       </main>
@@ -445,7 +492,7 @@ function ReviewScreen({ assignment, files, onBack, onContinue }: { assignment: A
           </div>
           <div className="summary-facts">
             <div><span>Due</span><strong>{assignment.dueLabel}</strong></div>
-            <div><span>Length</span><strong>{assignment.wordLimit.toLocaleString()} words</strong></div>
+            <div><span>Length</span><strong>{assignment.wordLimit > 0 ? `${assignment.wordLimit.toLocaleString()} words` : "Not provided"}</strong></div>
             <div><span>Files read</span><strong>{Math.max(files.length, 1)}</strong></div>
           </div>
         </section>
@@ -481,7 +528,7 @@ function ReviewScreen({ assignment, files, onBack, onContinue }: { assignment: A
   );
 }
 
-function ChoiceScreen({ choice, onChoice, onBack, onContinue }: { choice: StructureChoice; onChoice: (choice: StructureChoice) => void; onBack: () => void; onContinue: () => void }) {
+function ChoiceScreen({ choice, onChoice, onBack, onContinue, isStructuring, error }: { choice: StructureChoice; onChoice: (choice: StructureChoice) => void; onBack: () => void; onContinue: () => void; isStructuring: boolean; error: string }) {
   return (
     <div className="setup-shell">
       <ImportHeader />
@@ -509,8 +556,8 @@ function ChoiceScreen({ choice, onChoice, onBack, onContinue }: { choice: Struct
         </div>
 
         <div className="choice-actions">
-          <span>Nothing about your assignment changes. This only decides the first view.</span>
-          <button className="primary-button" type="button" onClick={onContinue}>Create workspace</button>
+          <span>{error ? <span className="inline-error" role="alert">{error}</span> : "Nothing about your assignment changes. This only decides the first view."}</span>
+          <button className="primary-button" type="button" disabled={isStructuring} onClick={onContinue}>{isStructuring ? "Creating…" : "Create workspace"}</button>
         </div>
       </main>
     </div>
@@ -536,6 +583,8 @@ function Workspace({
   blocks,
   view,
   analysis,
+  analysisResult,
+  analysisError,
   focusHeadingId,
   onView,
   onHeading,
@@ -549,6 +598,8 @@ function Workspace({
   blocks: WritingBlock[];
   view: ViewMode;
   analysis: AnalysisState;
+  analysisResult: DraftAnalysis | null;
+  analysisError: string;
   focusHeadingId: string | null;
   onView: (view: ViewMode) => void;
   onHeading: (blockId: string, value: string) => void;
@@ -559,6 +610,8 @@ function Workspace({
   saveLabel: string;
 }) {
   const requirementMap = useMemo(() => new Map(assignment.requirements.map((requirement) => [requirement.id, requirement])), [assignment.requirements]);
+  const feedbackMap = useMemo(() => new Map(analysisResult?.criteria.map((criterion) => [criterion.criterionId, criterion]) ?? []), [analysisResult]);
+  const highestLeverageCriterion = assignment.criteria.find((criterion) => criterion.id === analysisResult?.highestLeverageCriterionId);
   const totalWords = blocks.reduce((total, block) => total + wordCount(block.body), 0);
 
   useEffect(() => {
@@ -575,7 +628,7 @@ function Workspace({
           <strong>{assignment.title}</strong>
           <span>{assignment.courseCode} · {assignment.type}</span>
         </div>
-        <span className="due-pill"><i />Due {assignment.dueLabel} · On track</span>
+        <span className="due-pill"><i />{assignment.dueLabel === "Not provided" ? "Due date not provided" : `Due ${assignment.dueLabel} · On track`}</span>
         <span className="bar-spacer" />
         <span className="save-label" aria-live="polite">{saveLabel}</span>
         <button className="text-button" type="button">History</button>
@@ -598,21 +651,27 @@ function Workspace({
                   {analysis === "complete" ? <button className="secondary-button small" type="button" onClick={onAnalyse}>Run again</button> : null}
                 </div>
                 {analysis === "running" ? <div className="analysis-running"><span><i /><i /><i /></span>Reading your draft against each criterion…</div> : null}
-                {analysis === "complete" ? (
+                {analysisError ? <div className="analysis-error" role="alert">{analysisError}</div> : null}
+                {analysis === "complete" && analysisResult ? (
                   <>
                     <div className="analysis-summary">
                       <strong>Next focus</strong>
-                      <div><span>Engagement with sources</span> has the highest leverage in this draft.</div>
+                      <div><span>{highestLeverageCriterion?.name ?? "The clearest next step"}</span> has the highest leverage in this draft.</div>
+                      <div>{analysisResult.summary}</div>
                       <p>This is guidance against the rubric—not a mark.</p>
                     </div>
                     <div className="criterion-grid">
-                      {assignment.criteria.map((criterion) => (
-                        <article className={`criterion-card ${criterion.tone}`} key={criterion.id}>
-                          <div><strong>{criterion.name}</strong><span>{criterion.weight}%</span></div>
-                          <p>{criterion.description}</p>
-                          <button type="button" onClick={() => onView("full-draft")}>See this in the draft</button>
-                        </article>
-                      ))}
+                      {assignment.criteria.map((criterion) => {
+                        const feedback = feedbackMap.get(criterion.id);
+                        return (
+                          <article className={`criterion-card ${feedback?.tone ?? criterion.tone}`} key={criterion.id}>
+                            <div><strong>{criterion.name}</strong><span>{criterion.weight}%</span></div>
+                            <p>{feedback?.diagnosis ?? criterion.description}</p>
+                            <p className="criterion-action"><strong>Next:</strong> {feedback?.action ?? "Review this criterion against the current draft."}</p>
+                            <button type="button" onClick={() => onView("full-draft")}>Open full draft</button>
+                          </article>
+                        );
+                      })}
                     </div>
                   </>
                 ) : null}
@@ -728,9 +787,16 @@ export default function Home() {
   const [blocks, setBlocks] = useState<WritingBlock[]>([]);
   const [view, setView] = useState<ViewMode>("guide");
   const [analysis, setAnalysis] = useState<AnalysisState>("idle");
+  const [analysisResult, setAnalysisResult] = useState<DraftAnalysis | null>(null);
+  const [analysisError, setAnalysisError] = useState("");
+  const [isReading, setIsReading] = useState(false);
+  const [isStructuring, setIsStructuring] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [structureError, setStructureError] = useState("");
   const [focusHeadingId, setFocusHeadingId] = useState<string | null>(null);
   const [saveLabel, setSaveLabel] = useState("Saved · just now");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const guidanceRequest = useRef(0);
 
   useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -741,19 +807,95 @@ export default function Home() {
     setFiles((current) => [...current, ...imported]);
   };
 
-  const readAssignment = () => {
-    setAssignment(extractAssignment(files, pastedText));
-    setStage("review");
+  const readAssignment = async () => {
+    const fallback = extractAssignment(files, pastedText);
+    setIsReading(true);
+    setImportError("");
+    try {
+      const extracted = await requestAi<AiExtraction>("extract", {
+        sourceText: pastedText,
+        files: files.map((file) => ({ name: file.name, role: file.role, text: file.text, mediaType: file.mediaType, dataUrl: file.dataUrl })),
+      });
+      const requirements = extracted.requirements
+        .filter((requirement) => requirement.text.trim())
+        .slice(0, 10)
+        .map((requirement, index) => ({
+          id: `ai-requirement-${index + 1}`,
+          text: requirement.text.trim(),
+          scope: requirement.scope,
+          keywords: requirement.keywords.map((keyword) => keyword.trim().toLowerCase()).filter(Boolean).slice(0, 8),
+        }));
+      const criteria = extracted.criteria
+        .filter((criterion) => criterion.name.trim())
+        .slice(0, 10)
+        .map((criterion, index) => ({
+          id: `ai-criterion-${index + 1}`,
+          name: criterion.name.trim(),
+          weight: Math.max(0, Math.min(100, Math.round(criterion.weight))),
+          description: criterion.description.trim(),
+          tone: "attention" as const,
+        }));
+
+      setAssignment({
+        title: extracted.title.trim() || fallback.title,
+        courseCode: extracted.courseCode.trim() || fallback.courseCode,
+        type: extracted.type.trim() || fallback.type,
+        dueLabel: extracted.dueLabel.trim() || fallback.dueLabel,
+        wordLimit: extracted.wordLimit > 0 ? Math.round(extracted.wordLimit) : fallback.wordLimit,
+        task: extracted.task.trim() || fallback.task,
+        requirements: requirements.length ? requirements : fallback.requirements,
+        criteria: criteria.length ? criteria : fallback.criteria,
+      });
+      setStage("review");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Simplifii could not read that assignment.");
+    } finally {
+      setIsReading(false);
+    }
   };
 
-  const createWorkspace = () => {
-    setBlocks(createBlocks(assignment, choice));
-    setStage("workspace");
-    setView("guide");
+  const createWorkspace = async () => {
+    setStructureError("");
+    if (choice === "self") {
+      setBlocks(createBlocks(assignment, choice));
+      setStage("workspace");
+      setView("guide");
+      return;
+    }
+
+    setIsStructuring(true);
+    try {
+      const result = await requestAi<{ blocks: Array<{ heading: string; guidanceIds: string[] }> }>("structure", { assignment });
+      const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
+      const structuredBlocks = result.blocks
+        .filter((block) => block.heading.trim())
+        .slice(0, 8)
+        .map((block) => {
+          const guidanceIds = [...new Set(block.guidanceIds.filter((id) => allowedIds.has(id)))];
+          return {
+            id: uid("block"),
+            heading: block.heading.trim(),
+            headingSource: "simplifii" as const,
+            body: "",
+            guidanceIds: guidanceIds.length ? guidanceIds : guidanceForHeading(block.heading, assignment.requirements),
+          };
+        });
+      if (!structuredBlocks.length) throw new Error("Simplifii did not find a useful structure. Try reading the assignment again.");
+      setBlocks(structuredBlocks);
+      setStage("workspace");
+      setView("guide");
+    } catch (error) {
+      setStructureError(error instanceof Error ? error.message : "Simplifii could not create the blocks.");
+    } finally {
+      setIsStructuring(false);
+    }
   };
 
   const updateBody = (blockId: string, value: string) => {
     setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, body: value } : block));
+    setAnalysis("idle");
+    setAnalysisResult(null);
+    setAnalysisError("");
     setSaveLabel("Saving…");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
@@ -761,6 +903,9 @@ export default function Home() {
 
   const updateHeading = (blockId: string, value: string) => {
     setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, heading: value } : block));
+    setAnalysis("idle");
+    setAnalysisResult(null);
+    setAnalysisError("");
     setSaveLabel("Saving…");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
@@ -780,19 +925,56 @@ export default function Home() {
     setFocusHeadingId(newBlockId);
   };
 
-  const analyse = () => {
+  const refreshGuidance = async () => {
+    const locallyAllocated = reallocateGuidance(blocks, assignment.requirements);
+    setBlocks(locallyAllocated);
+    if (locallyAllocated.reduce((total, block) => total + wordCount(block.body), 0) < 20) return;
+
+    const requestId = ++guidanceRequest.current;
+    try {
+      const result = await requestAi<{ allocations: Array<{ blockId: string; guidanceIds: string[] }> }>("allocate", {
+        requirements: assignment.requirements,
+        blocks: locallyAllocated,
+      });
+      if (requestId !== guidanceRequest.current) return;
+      const allocationMap = new Map(result.allocations.map((allocation) => [allocation.blockId, allocation.guidanceIds]));
+      const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
+      setBlocks((current) => current.map((block) => {
+        const allocated = allocationMap.get(block.id);
+        if (!allocated) return block;
+        const guidanceIds = [...new Set(allocated.filter((id) => allowedIds.has(id)))];
+        return guidanceIds.length ? { ...block, guidanceIds } : block;
+      }));
+    } catch {
+      // The inherited/local allocation remains intact if the background AI refresh is unavailable.
+    }
+  };
+
+  const analyse = async () => {
+    if (blocks.reduce((total, block) => total + wordCount(block.body), 0) < 20) {
+      setAnalysisError("Write a little more before asking Simplifii to analyse the draft.");
+      return;
+    }
     setAnalysis("running");
-    setTimeout(() => setAnalysis("complete"), 1200);
+    setAnalysisError("");
+    try {
+      const result = await requestAi<DraftAnalysis>("analyse", { assignment, blocks });
+      setAnalysisResult(result);
+      setAnalysis("complete");
+    } catch (error) {
+      setAnalysis("idle");
+      setAnalysisError(error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
+    }
   };
 
   if (stage === "import") {
-    return <ImportScreen files={files} pastedText={pastedText} onFiles={addFiles} onPaste={setPastedText} onRemove={(id) => setFiles((current) => current.filter((file) => file.id !== id))} onContinue={readAssignment} />;
+    return <ImportScreen files={files} pastedText={pastedText} onFiles={addFiles} onPaste={setPastedText} onRemove={(id) => setFiles((current) => current.filter((file) => file.id !== id))} onContinue={readAssignment} isReading={isReading} error={importError} />;
   }
   if (stage === "review") {
     return <ReviewScreen assignment={assignment} files={files} onBack={() => setStage("import")} onContinue={() => setStage("choice")} />;
   }
   if (stage === "choice") {
-    return <ChoiceScreen choice={choice} onChoice={setChoice} onBack={() => setStage("review")} onContinue={createWorkspace} />;
+    return <ChoiceScreen choice={choice} onChoice={setChoice} onBack={() => setStage("review")} onContinue={createWorkspace} isStructuring={isStructuring} error={structureError} />;
   }
   return (
     <Workspace
@@ -800,11 +982,13 @@ export default function Home() {
       blocks={blocks}
       view={view}
       analysis={analysis}
+      analysisResult={analysisResult}
+      analysisError={analysisError}
       focusHeadingId={focusHeadingId}
       onView={setView}
       onHeading={updateHeading}
       onBody={updateBody}
-      onBlur={() => setBlocks((current) => reallocateGuidance(current, assignment.requirements))}
+      onBlur={refreshGuidance}
       onInsert={insertBlock}
       onAnalyse={analyse}
       saveLabel={saveLabel}

@@ -29,12 +29,15 @@ test("server-renders the Simplifii import flow", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
-test("keeps the approved P0 choices and light-theme contract", async () => {
-  const [page, css, layout, packageJson] = await Promise.all([
+test("keeps the approved P0 choices, AI wiring and light-theme contract", async () => {
+  const [page, css, layout, packageJson, aiRoute, envExample, gitignore] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/ai/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../.gitignore", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Simplifii structures it/);
@@ -53,6 +56,22 @@ test("keeps the approved P0 choices and light-theme contract", async () => {
   assert.match(page, /ViewMode = "guide" \| "full-draft"/);
   assert.doesNotMatch(page, />Required</);
   assert.doesNotMatch(page, />Suggested</);
+  assert.match(page, /fetch\("\/api\/ai"/);
+  assert.match(page, /requestAi<DraftAnalysis>\("analyse"/);
+  assert.match(page, /import\("mammoth"\)/);
+  assert.match(page, /reader\.readAsDataURL\(file\)/);
+  assert.doesNotMatch(page, /AI_GATEWAY_API_KEY/);
+
+  assert.match(aiRoute, /generateText/);
+  assert.match(aiRoute, /Output\.object/);
+  assert.match(aiRoute, /process\.env\.AI_GATEWAY_API_KEY/);
+  assert.match(aiRoute, /type: "file" as const/);
+  assert.match(aiRoute, /Never rewrite the student's prose/);
+  assert.match(envExample, /^AI_GATEWAY_API_KEY=/m);
+  assert.match(envExample, /^AI_MODEL=openai\/gpt-5\.6-terra/m);
+  assert.match(gitignore, /^\.env\*$/m);
+  assert.match(gitignore, /^!\.env\.example$/m);
+  assert.match(packageJson, /"ai"/);
 
   assert.match(css, /--bg:\s*#f6f5f2/);
   assert.match(css, /--card:\s*#ffffff/);
