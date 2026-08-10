@@ -29,8 +29,8 @@ test("server-renders the Simplifii import flow", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
-test("keeps the approved P0 choices, AI wiring and light-theme contract", async () => {
-  const [page, css, layout, packageJson, aiRoute, envExample, gitignore] = await Promise.all([
+test("keeps the approved P0 choices, local assignment cache, AI wiring and light-theme contract", async () => {
+  const [page, css, layout, packageJson, aiRoute, envExample, gitignore, browserCache, hostingConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -38,6 +38,8 @@ test("keeps the approved P0 choices, AI wiring and light-theme contract", async 
     readFile(new URL("../app/api/ai/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+    readFile(new URL("../lib/browser-cache.ts", import.meta.url), "utf8"),
+    readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Simplifii structures it/);
@@ -61,6 +63,28 @@ test("keeps the approved P0 choices, AI wiring and light-theme contract", async 
   assert.match(page, /import\("mammoth"\)/);
   assert.match(page, /reader\.readAsDataURL\(file\)/);
   assert.doesNotMatch(page, /AI_GATEWAY_API_KEY/);
+  assert.match(page, /function AssignmentSwitcher/);
+  assert.match(page, /Create new assignment/);
+  assert.match(page, /Saved on this browser/);
+  assert.match(page, /CachedAppState/);
+  assert.match(page, /version: 1/);
+  assert.match(page, /salvageCachedAssignments/);
+  assert.match(page, /Local cache needs attention/);
+  assert.match(page, /analysisResult/);
+  assert.match(page, /assignmentMenu=/);
+
+  assert.match(browserCache, /simplifii-local-workspaces-v1/);
+  assert.match(browserCache, /window\.caches\.open/);
+  assert.match(browserCache, /window\.localStorage/);
+  assert.match(browserCache, /__simplifii_cache__\/materials/);
+  assert.match(browserCache, /prepareBrowserCache/);
+  assert.match(browserCache, /writeBrowserJournal/);
+  assert.match(browserCache, /externaliseMaterials/);
+  assert.match(browserCache, /MissingMaterialError/);
+  assert.match(browserCache, /quarantineUnreadableBrowserCache/);
+  assert.match(browserCache, /readBrowserCache/);
+  assert.match(browserCache, /writeBrowserCache/);
+  assert.equal(JSON.parse(hostingConfig).d1, null);
 
   assert.match(aiRoute, /generateText/);
   assert.match(aiRoute, /Output\.object/);

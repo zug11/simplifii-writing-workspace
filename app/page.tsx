@@ -3,11 +3,14 @@
 import {
   type ChangeEvent,
   type DragEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+
+import { prepareBrowserCache, quarantineUnreadableBrowserCache, readBrowserCache, writeBrowserCache, writeBrowserJournal } from "@/lib/browser-cache";
 
 type Stage = "import" | "review" | "choice" | "workspace";
 type StructureChoice = "simplifii" | "self";
@@ -73,6 +76,36 @@ type DraftAnalysis = {
     diagnosis: string;
     action: string;
   }>;
+};
+
+type CachedAssignment = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  stage: Stage;
+  files: ImportedFile[];
+  pastedText: string;
+  assignment: Assignment;
+  choice: StructureChoice;
+  blocks: WritingBlock[];
+  view: ViewMode;
+  analysisResult: DraftAnalysis | null;
+};
+
+type CachedAppState = {
+  version: 1;
+  activeAssignmentId: string;
+  assignments: CachedAssignment[];
+};
+
+type AssignmentMenuProps = {
+  ready: boolean;
+  activeId: string;
+  activeTitle: string;
+  storageNote: string;
+  assignments: Array<{ id: string; title: string; updatedAt: number }>;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
 };
 
 const RESEARCH_REQUIREMENTS: Requirement[] = [
@@ -148,6 +181,68 @@ const MAX_AI_FILE_BYTES = 10 * 1024 * 1024;
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function blankCachedAssignment(): CachedAssignment {
+  const now = Date.now();
+  return {
+    id: uid("assignment"),
+    createdAt: now,
+    updatedAt: now,
+    stage: "import",
+    files: [],
+    pastedText: "",
+    assignment: {
+      ...DEFAULT_ASSIGNMENT,
+      requirements: DEFAULT_ASSIGNMENT.requirements.map((requirement) => ({ ...requirement, keywords: [...requirement.keywords] })),
+      criteria: DEFAULT_ASSIGNMENT.criteria.map((criterion) => ({ ...criterion })),
+    },
+    choice: "simplifii",
+    blocks: [],
+    view: "guide",
+    analysisResult: null,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isCachedAssignment(item: unknown): item is CachedAssignment {
+  if (!isRecord(item) || typeof item.id !== "string" || typeof item.createdAt !== "number" || typeof item.updatedAt !== "number") return false;
+  if (!(["import", "review", "choice", "workspace"] as unknown[]).includes(item.stage)) return false;
+  if (!Array.isArray(item.files) || !Array.isArray(item.blocks) || !isRecord(item.assignment)) return false;
+  if (typeof item.pastedText !== "string" || !(["simplifii", "self"] as unknown[]).includes(item.choice)) return false;
+  if (!(["guide", "full-draft"] as unknown[]).includes(item.view)) return false;
+
+  const assignment = item.assignment;
+  if (typeof assignment.title !== "string" || typeof assignment.courseCode !== "string" || typeof assignment.type !== "string") return false;
+  if (typeof assignment.dueLabel !== "string" || typeof assignment.wordLimit !== "number" || typeof assignment.task !== "string") return false;
+  if (!Array.isArray(assignment.requirements) || !Array.isArray(assignment.criteria)) return false;
+  if (!item.files.every((file) => isRecord(file) && typeof file.id === "string" && typeof file.name === "string" && typeof file.text === "string")) return false;
+  if (!item.blocks.every((block) => isRecord(block) && typeof block.id === "string" && typeof block.heading === "string" && typeof block.body === "string" && Array.isArray(block.guidanceIds))) return false;
+  return item.analysisResult === null || (isRecord(item.analysisResult) && typeof item.analysisResult.summary === "string" && Array.isArray(item.analysisResult.criteria));
+}
+
+function isCachedAppState(value: unknown): value is CachedAppState {
+  return isRecord(value)
+    && value.version === 1
+    && typeof value.activeAssignmentId === "string"
+    && Array.isArray(value.assignments)
+    && value.assignments.every(isCachedAssignment);
+}
+
+function salvageCachedAssignments(value: unknown) {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.assignments)) return [];
+  return value.assignments.filter(isCachedAssignment);
+}
+
+function upsertCachedAssignment(assignments: CachedAssignment[], record: CachedAssignment) {
+  const existingIndex = assignments.findIndex((item) => item.id === record.id);
+  if (existingIndex < 0) return [record, ...assignments];
+  const next = [...assignments];
+  next[existingIndex] = record;
+  return next;
 }
 
 function classifyFile(name: string): FileRole {
@@ -358,12 +453,120 @@ function Brand() {
   );
 }
 
-function ImportHeader() {
+function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignments, onSelect, onCreate }: AssignmentMenuProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [open]);
+
+  return (
+    <div
+      className="assignment-switcher"
+      ref={rootRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        ref={triggerRef}
+        className="assignment-switcher-trigger"
+        type="button"
+        aria-expanded={open}
+        aria-controls="assignment-switcher-list"
+        disabled={!ready}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="assignment-switcher-title">{activeTitle}</span>
+        <span className={`assignment-caret${open ? " open" : ""}`} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="assignment-menu" id="assignment-switcher-list" role="group" aria-label="Assignments">
+          <span className="assignment-menu-heading">Assignments</span>
+          <div className="assignment-menu-list">
+            {assignments.map((item) => (
+              <button
+                className={`assignment-menu-item${item.id === activeId ? " assignment-menu-active" : ""}`}
+                type="button"
+                aria-current={item.id === activeId ? "page" : undefined}
+                key={item.id}
+                onClick={() => {
+                  setOpen(false);
+                  if (item.id !== activeId) onSelect(item.id);
+                }}
+              >
+                <span className="assignment-menu-item-copy"><strong>{item.title}</strong></span>
+                {item.id === activeId ? <span className="assignment-menu-current">Current</span> : null}
+              </button>
+            ))}
+          </div>
+          <button
+            className="assignment-menu-create"
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onCreate();
+            }}
+          >
+            <span aria-hidden="true">+</span> Create new assignment
+          </button>
+          <span className="assignment-menu-note">{storageNote}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ImportHeader({ assignmentMenu }: { assignmentMenu: AssignmentMenuProps }) {
   return (
     <header className="simple-topbar">
       <Brand />
+      <AssignmentSwitcher {...assignmentMenu} />
       <span className="topbar-note">Assignment workspace</span>
     </header>
+  );
+}
+
+function CacheRecoveryScreen() {
+  return (
+    <div className="setup-shell">
+      <header className="simple-topbar">
+        <Brand />
+        <span className="topbar-note">Browser cache protected</span>
+      </header>
+      <main className="setup-main">
+        <section className="setup-intro">
+          <span className="eyebrow">LOCAL DATA NEEDS ATTENTION</span>
+          <h1>Simplifii has not overwritten it.</h1>
+          <p>The saved browser data could not be read or copied into recovery safely, so this workspace is paused instead of letting new writing disappear.</p>
+        </section>
+        <section className="setup-card">
+          <div className="card-heading-row">
+            <div>
+              <h2>Clear this site’s stored data, then reload</h2>
+              <p>This only affects Simplifii data held by this browser. You can also open the site in another browser profile to begin a clean local workspace.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
   );
 }
 
@@ -376,6 +579,7 @@ function ImportScreen({
   onContinue,
   isReading,
   error,
+  assignmentMenu,
 }: {
   files: ImportedFile[];
   pastedText: string;
@@ -385,6 +589,7 @@ function ImportScreen({
   onContinue: () => void;
   isReading: boolean;
   error: string;
+  assignmentMenu: AssignmentMenuProps;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -397,7 +602,7 @@ function ImportScreen({
 
   return (
     <div className="setup-shell">
-      <ImportHeader />
+      <ImportHeader assignmentMenu={assignmentMenu} />
       <main className="setup-main">
         <section className="setup-intro">
           <span className="eyebrow">START AN ASSIGNMENT</span>
@@ -470,10 +675,10 @@ function ImportScreen({
   );
 }
 
-function ReviewScreen({ assignment, files, onBack, onContinue }: { assignment: Assignment; files: ImportedFile[]; onBack: () => void; onContinue: () => void }) {
+function ReviewScreen({ assignment, files, onBack, onContinue, assignmentMenu }: { assignment: Assignment; files: ImportedFile[]; onBack: () => void; onContinue: () => void; assignmentMenu: AssignmentMenuProps }) {
   return (
     <div className="setup-shell">
-      <ImportHeader />
+      <ImportHeader assignmentMenu={assignmentMenu} />
       <main className="setup-main review-main">
         <button className="back-button" type="button" onClick={onBack}>← Add or change files</button>
         <section className="setup-intro compact-intro">
@@ -528,10 +733,10 @@ function ReviewScreen({ assignment, files, onBack, onContinue }: { assignment: A
   );
 }
 
-function ChoiceScreen({ choice, onChoice, onBack, onContinue, isStructuring, error }: { choice: StructureChoice; onChoice: (choice: StructureChoice) => void; onBack: () => void; onContinue: () => void; isStructuring: boolean; error: string }) {
+function ChoiceScreen({ choice, onChoice, onBack, onContinue, isStructuring, error, assignmentMenu }: { choice: StructureChoice; onChoice: (choice: StructureChoice) => void; onBack: () => void; onContinue: () => void; isStructuring: boolean; error: string; assignmentMenu: AssignmentMenuProps }) {
   return (
     <div className="setup-shell">
-      <ImportHeader />
+      <ImportHeader assignmentMenu={assignmentMenu} />
       <main className="setup-main choice-main">
         <button className="back-button" type="button" onClick={onBack}>← Check extraction</button>
         <section className="setup-intro compact-intro">
@@ -580,6 +785,7 @@ function PlusButton({ label, onClick }: { label: string; onClick: () => void }) 
 
 function Workspace({
   assignment,
+  assignmentMenu,
   blocks,
   view,
   analysis,
@@ -595,6 +801,7 @@ function Workspace({
   saveLabel,
 }: {
   assignment: Assignment;
+  assignmentMenu: AssignmentMenuProps;
   blocks: WritingBlock[];
   view: ViewMode;
   analysis: AnalysisState;
@@ -623,9 +830,9 @@ function Workspace({
     <div className="workspace-shell">
       <header className="workspace-topbar">
         <Brand />
+        <AssignmentSwitcher {...assignmentMenu} />
         <span className="bar-divider" aria-hidden="true" />
         <div className="document-identity">
-          <strong>{assignment.title}</strong>
           <span>{assignment.courseCode} · {assignment.type}</span>
         </div>
         <span className="due-pill"><i />{assignment.dueLabel === "Not provided" ? "Due date not provided" : `Due ${assignment.dueLabel} · On track`}</span>
@@ -794,21 +1001,193 @@ export default function Home() {
   const [importError, setImportError] = useState("");
   const [structureError, setStructureError] = useState("");
   const [focusHeadingId, setFocusHeadingId] = useState<string | null>(null);
-  const [saveLabel, setSaveLabel] = useState("Saved · just now");
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveLabel, setSaveLabel] = useState("Saved locally · just now");
+  const [cacheReady, setCacheReady] = useState(false);
+  const [cacheBlocked, setCacheBlocked] = useState(false);
+  const [activeAssignmentId, setActiveAssignmentId] = useState("");
+  const [assignmentCatalog, setAssignmentCatalog] = useState<CachedAssignment[]>([]);
+  const cacheWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cacheWriteChain = useRef<Promise<boolean>>(Promise.resolve(true));
+  const latestPreparedAt = useRef(0);
+  const forceNextCacheWrite = useRef(false);
+  const catalogRef = useRef<CachedAssignment[]>([]);
+  const activeAssignmentIdRef = useRef("");
+  const cacheWritableRef = useRef(true);
+  const assignmentEpoch = useRef(0);
+  const importRevision = useRef(0);
+  const extractionRevision = useRef(0);
+  const documentRevision = useRef(0);
   const guidanceRequest = useRef(0);
+  const structureRequest = useRef(0);
 
-  useEffect(() => () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
+  const restoreAssignment = useCallback((record: CachedAssignment) => {
+    assignmentEpoch.current += 1;
+    importRevision.current = 0;
+    extractionRevision.current = 0;
+    documentRevision.current = 0;
+    guidanceRequest.current += 1;
+    structureRequest.current += 1;
+    setStage(record.stage);
+    setFiles(record.files);
+    setPastedText(record.pastedText);
+    setAssignment(record.assignment);
+    setChoice(record.choice);
+    setBlocks(record.blocks);
+    setView(record.view);
+    setAnalysis(record.analysisResult ? "complete" : "idle");
+    setAnalysisResult(record.analysisResult);
+    setAnalysisError("");
+    setImportError("");
+    setStructureError("");
+    setFocusHeadingId(null);
+    setIsReading(false);
+    setIsStructuring(false);
+    setSaveLabel("Saved locally · just now");
   }, []);
 
+  const stageCacheWrite = useCallback((cache: CachedAppState, immediate = false) => {
+    if (!cacheWritableRef.current) return;
+    const prepared = prepareBrowserCache(cache);
+    latestPreparedAt.current = prepared.writtenAt;
+    if (!writeBrowserJournal(prepared)) setSaveLabel("Saving locally…");
+
+    if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+    const commit = () => {
+      cacheWriteChain.current = cacheWriteChain.current
+        .catch(() => false)
+        .then(() => writeBrowserCache(prepared));
+      void cacheWriteChain.current.then((saved) => {
+        if (prepared.writtenAt !== latestPreparedAt.current || activeAssignmentIdRef.current !== cache.activeAssignmentId) return;
+        setSaveLabel(saved ? "Saved locally · just now" : "Local save unavailable");
+      });
+    };
+
+    if (immediate) commit();
+    else cacheWriteTimer.current = setTimeout(commit, 350);
+  }, []);
+
+  const captureCurrentRecord = useCallback((): CachedAssignment | null => {
+    if (!activeAssignmentId) return null;
+    const existing = catalogRef.current.find((record) => record.id === activeAssignmentId);
+    const now = Date.now();
+    return {
+      id: activeAssignmentId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      stage,
+      files,
+      pastedText,
+      assignment,
+      choice,
+      blocks,
+      view,
+      analysisResult,
+    };
+  }, [activeAssignmentId, analysisResult, assignment, blocks, choice, files, pastedText, stage, view]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const cacheResult = await readBrowserCache<unknown>();
+      if (cancelled) return;
+      const cached = cacheResult.status === "ready" ? cacheResult.value : null;
+      const validCache = isCachedAppState(cached);
+      const unreadableCache = cacheResult.status === "unreadable" || (cacheResult.status === "ready" && !validCache);
+      const cacheRecovered = unreadableCache ? await quarantineUnreadableBrowserCache() : true;
+      if (cancelled) return;
+      const salvagedCatalog = salvageCachedAssignments(cached);
+      const restoredCatalog = validCache && cached.assignments.length ? cached.assignments : salvagedCatalog.length ? salvagedCatalog : [blankCachedAssignment()];
+      const requestedActiveId = validCache ? cached.activeAssignmentId : isRecord(cached) && typeof cached.activeAssignmentId === "string" ? cached.activeAssignmentId : "";
+      const restoredActive = restoredCatalog.find((record) => record.id === requestedActiveId) ?? restoredCatalog[0];
+      cacheWritableRef.current = cacheRecovered;
+      catalogRef.current = restoredCatalog;
+      activeAssignmentIdRef.current = restoredActive.id;
+      setAssignmentCatalog(restoredCatalog);
+      setActiveAssignmentId(restoredActive.id);
+      restoreAssignment(restoredActive);
+      setCacheBlocked(!cacheRecovered);
+      if (unreadableCache) setSaveLabel(cacheRecovered ? "Previous cache preserved" : "Local cache needs attention");
+      setCacheReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [restoreAssignment]);
+
+  useEffect(() => {
+    if (!cacheReady) return;
+    const currentRecord = captureCurrentRecord();
+    if (!currentRecord) return;
+    const nextCatalog = upsertCachedAssignment(catalogRef.current, currentRecord);
+    catalogRef.current = nextCatalog;
+    setAssignmentCatalog(nextCatalog);
+
+    const immediate = forceNextCacheWrite.current;
+    forceNextCacheWrite.current = false;
+    stageCacheWrite({ version: 1, activeAssignmentId: currentRecord.id, assignments: nextCatalog }, immediate);
+  }, [cacheReady, captureCurrentRecord, stageCacheWrite]);
+
+  useEffect(() => () => {
+    if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+  }, []);
+
+  const switchAssignment = useCallback((id: string) => {
+    if (id === activeAssignmentIdRef.current) return;
+    if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+    const currentRecord = captureCurrentRecord();
+    const nextCatalog = currentRecord ? upsertCachedAssignment(catalogRef.current, currentRecord) : catalogRef.current;
+    const target = nextCatalog.find((record) => record.id === id);
+    if (!target) return;
+
+    catalogRef.current = nextCatalog;
+    activeAssignmentIdRef.current = target.id;
+    setAssignmentCatalog(nextCatalog);
+    setActiveAssignmentId(target.id);
+    restoreAssignment(target);
+    stageCacheWrite({ version: 1, activeAssignmentId: target.id, assignments: nextCatalog }, true);
+  }, [captureCurrentRecord, restoreAssignment, stageCacheWrite]);
+
+  const createNewAssignment = useCallback(() => {
+    if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+    const currentRecord = captureCurrentRecord();
+    const withCurrent = currentRecord ? upsertCachedAssignment(catalogRef.current, currentRecord) : catalogRef.current;
+    const blank = blankCachedAssignment();
+    const nextCatalog = [blank, ...withCurrent];
+
+    catalogRef.current = nextCatalog;
+    activeAssignmentIdRef.current = blank.id;
+    setAssignmentCatalog(nextCatalog);
+    setActiveAssignmentId(blank.id);
+    restoreAssignment(blank);
+    stageCacheWrite({ version: 1, activeAssignmentId: blank.id, assignments: nextCatalog }, true);
+  }, [captureCurrentRecord, restoreAssignment, stageCacheWrite]);
+
   const addFiles = async (incoming: File[]) => {
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
     const imported = await Promise.all(incoming.map(readImportedFile));
+    if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current) return;
+    importRevision.current += 1;
+    forceNextCacheWrite.current = imported.some((file) => Boolean(file.dataUrl));
+    setSaveLabel("Saving locally…");
     setFiles((current) => [...current, ...imported]);
+  };
+
+  const changePastedText = (value: string) => {
+    importRevision.current += 1;
+    setPastedText(value);
+  };
+
+  const removeFile = (id: string) => {
+    importRevision.current += 1;
+    setFiles((current) => current.filter((file) => file.id !== id));
   };
 
   const readAssignment = async () => {
     const fallback = extractAssignment(files, pastedText);
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originImportRevision = importRevision.current;
     setIsReading(true);
     setImportError("");
     try {
@@ -816,6 +1195,7 @@ export default function Home() {
         sourceText: pastedText,
         files: files.map((file) => ({ name: file.name, role: file.role, text: file.text, mediaType: file.mediaType, dataUrl: file.dataUrl })),
       });
+      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originImportRevision !== importRevision.current) return;
       const requirements = extracted.requirements
         .filter((requirement) => requirement.text.trim())
         .slice(0, 10)
@@ -846,26 +1226,35 @@ export default function Home() {
         requirements: requirements.length ? requirements : fallback.requirements,
         criteria: criteria.length ? criteria : fallback.criteria,
       });
+      extractionRevision.current += 1;
       setStage("review");
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Simplifii could not read that assignment.");
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) {
+        setImportError(error instanceof Error ? error.message : "Simplifii could not read that assignment.");
+      }
     } finally {
-      setIsReading(false);
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setIsReading(false);
     }
   };
 
   const createWorkspace = async () => {
     setStructureError("");
     if (choice === "self") {
+      documentRevision.current += 1;
       setBlocks(createBlocks(assignment, choice));
       setStage("workspace");
       setView("guide");
       return;
     }
 
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originExtractionRevision = extractionRevision.current;
+    const requestId = ++structureRequest.current;
     setIsStructuring(true);
     try {
       const result = await requestAi<{ blocks: Array<{ heading: string; guidanceIds: string[] }> }>("structure", { assignment });
+      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originExtractionRevision !== extractionRevision.current || requestId !== structureRequest.current) return;
       const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
       const structuredBlocks = result.blocks
         .filter((block) => block.heading.trim())
@@ -881,38 +1270,46 @@ export default function Home() {
           };
         });
       if (!structuredBlocks.length) throw new Error("Simplifii did not find a useful structure. Try reading the assignment again.");
+      documentRevision.current += 1;
       setBlocks(structuredBlocks);
       setStage("workspace");
       setView("guide");
     } catch (error) {
-      setStructureError(error instanceof Error ? error.message : "Simplifii could not create the blocks.");
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originExtractionRevision === extractionRevision.current && requestId === structureRequest.current) {
+        setStructureError(error instanceof Error ? error.message : "Simplifii could not create the blocks.");
+      }
     } finally {
-      setIsStructuring(false);
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && requestId === structureRequest.current) setIsStructuring(false);
     }
   };
 
+  const leaveStructureChoice = () => {
+    structureRequest.current += 1;
+    setIsStructuring(false);
+    setStage("review");
+  };
+
   const updateBody = (blockId: string, value: string) => {
+    documentRevision.current += 1;
     setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, body: value } : block));
     setAnalysis("idle");
     setAnalysisResult(null);
     setAnalysisError("");
-    setSaveLabel("Saving…");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
+    setSaveLabel("Saving locally…");
   };
 
   const updateHeading = (blockId: string, value: string) => {
+    documentRevision.current += 1;
     setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, heading: value } : block));
     setAnalysis("idle");
     setAnalysisResult(null);
     setAnalysisError("");
-    setSaveLabel("Saving…");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => setSaveLabel("Saved · just now"), 800);
+    setSaveLabel("Saving locally…");
   };
 
   const insertBlock = (anchorId: string, position: "before" | "after") => {
     const newBlockId = uid("block");
+    documentRevision.current += 1;
     setBlocks((current) => {
       const index = current.findIndex((block) => block.id === anchorId);
       if (index < 0) return current;
@@ -922,23 +1319,32 @@ export default function Home() {
       next.splice(position === "before" ? index : index + 1, 0, newBlock);
       return next;
     });
+    setAnalysis("idle");
+    setAnalysisResult(null);
+    setAnalysisError("");
+    setSaveLabel("Saving locally…");
     setFocusHeadingId(newBlockId);
   };
 
   const refreshGuidance = async () => {
     const locallyAllocated = reallocateGuidance(blocks, assignment.requirements);
+    documentRevision.current += 1;
     setBlocks(locallyAllocated);
     if (locallyAllocated.reduce((total, block) => total + wordCount(block.body), 0) < 20) return;
 
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originDocumentRevision = documentRevision.current;
     const requestId = ++guidanceRequest.current;
     try {
       const result = await requestAi<{ allocations: Array<{ blockId: string; guidanceIds: string[] }> }>("allocate", {
         requirements: assignment.requirements,
         blocks: locallyAllocated,
       });
-      if (requestId !== guidanceRequest.current) return;
+      if (requestId !== guidanceRequest.current || originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) return;
       const allocationMap = new Map(result.allocations.map((allocation) => [allocation.blockId, allocation.guidanceIds]));
       const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
+      documentRevision.current += 1;
       setBlocks((current) => current.map((block) => {
         const allocated = allocationMap.get(block.id);
         if (!allocated) return block;
@@ -955,30 +1361,58 @@ export default function Home() {
       setAnalysisError("Write a little more before asking Simplifii to analyse the draft.");
       return;
     }
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originDocumentRevision = documentRevision.current;
     setAnalysis("running");
     setAnalysisError("");
     try {
       const result = await requestAi<DraftAnalysis>("analyse", { assignment, blocks });
+      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) {
+        if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");
+        return;
+      }
       setAnalysisResult(result);
       setAnalysis("complete");
     } catch (error) {
-      setAnalysis("idle");
-      setAnalysisError(error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originDocumentRevision === documentRevision.current) {
+        setAnalysis("idle");
+        setAnalysisError(error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
+      }
     }
   };
 
+  const assignmentMenu = useMemo<AssignmentMenuProps>(() => ({
+    ready: cacheReady,
+    activeId: activeAssignmentId,
+    activeTitle: stage === "import" ? "New assignment" : assignment.title.trim() || "Untitled assignment",
+    storageNote: saveLabel === "Previous cache preserved" ? "Previous cache preserved; saving a clean copy" : saveLabel === "Local cache needs attention" ? "Existing browser cache was left untouched" : saveLabel === "Local save unavailable" ? "Browser storage is unavailable" : saveLabel.startsWith("Saving") ? "Saving on this browser…" : "Saved on this browser",
+    assignments: [...assignmentCatalog]
+      .sort((first, second) => second.updatedAt - first.updatedAt)
+      .map((record) => ({
+        id: record.id,
+        title: record.stage === "import" ? "New assignment" : record.assignment.title.trim() || "Untitled assignment",
+        updatedAt: record.updatedAt,
+      })),
+    onSelect: switchAssignment,
+    onCreate: createNewAssignment,
+  }), [activeAssignmentId, assignment.title, assignmentCatalog, cacheReady, createNewAssignment, saveLabel, stage, switchAssignment]);
+
+  if (cacheBlocked) return <CacheRecoveryScreen />;
+
   if (stage === "import") {
-    return <ImportScreen files={files} pastedText={pastedText} onFiles={addFiles} onPaste={setPastedText} onRemove={(id) => setFiles((current) => current.filter((file) => file.id !== id))} onContinue={readAssignment} isReading={isReading} error={importError} />;
+    return <ImportScreen files={files} pastedText={pastedText} onFiles={addFiles} onPaste={changePastedText} onRemove={removeFile} onContinue={readAssignment} isReading={isReading} error={importError} assignmentMenu={assignmentMenu} />;
   }
   if (stage === "review") {
-    return <ReviewScreen assignment={assignment} files={files} onBack={() => setStage("import")} onContinue={() => setStage("choice")} />;
+    return <ReviewScreen assignment={assignment} files={files} onBack={() => setStage("import")} onContinue={() => setStage("choice")} assignmentMenu={assignmentMenu} />;
   }
   if (stage === "choice") {
-    return <ChoiceScreen choice={choice} onChoice={setChoice} onBack={() => setStage("review")} onContinue={createWorkspace} isStructuring={isStructuring} error={structureError} />;
+    return <ChoiceScreen choice={choice} onChoice={setChoice} onBack={leaveStructureChoice} onContinue={createWorkspace} isStructuring={isStructuring} error={structureError} assignmentMenu={assignmentMenu} />;
   }
   return (
     <Workspace
       assignment={assignment}
+      assignmentMenu={assignmentMenu}
       blocks={blocks}
       view={view}
       analysis={analysis}
