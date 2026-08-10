@@ -31,6 +31,7 @@ type AssignmentInput = {
 type BlockInput = {
   id: string;
   heading: string;
+  headingSource?: "simplifii" | "student";
   body: string;
   guidanceIds: string[];
 };
@@ -87,6 +88,15 @@ type AnalysisAnnotation = {
   how: string;
 };
 
+type BlockAnalysis = {
+  blockId: string;
+  summary: string;
+  checklist: Array<{
+    text: string;
+    met: boolean;
+  }>;
+};
+
 type AnalysisOutput = {
   summary: string;
   highestLeverageCriterionId: string;
@@ -96,6 +106,7 @@ type AnalysisOutput = {
     diagnosis: string;
     action: string;
   }>;
+  blockAnalysis: BlockAnalysis[];
   annotations: AnalysisAnnotation[];
 };
 
@@ -229,6 +240,32 @@ const analysisSchema = jsonSchema<ModelAnalysisOutput>({
         required: ["criterionId", "tone", "diagnosis", "action"],
       },
     },
+    blockAnalysis: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          blockId: { type: "string" },
+          summary: { type: "string", minLength: 1, maxLength: 600 },
+          checklist: {
+            type: "array",
+            minItems: 3,
+            maxItems: 6,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                text: { type: "string", minLength: 1, maxLength: 180 },
+                met: { type: "boolean" },
+              },
+              required: ["text", "met"],
+            },
+          },
+        },
+        required: ["blockId", "summary", "checklist"],
+      },
+    },
     annotations: {
       type: "array",
       maxItems: MAX_ANALYSIS_ANNOTATIONS,
@@ -248,7 +285,7 @@ const analysisSchema = jsonSchema<ModelAnalysisOutput>({
       },
     },
   },
-  required: ["summary", "highestLeverageCriterionId", "criteria", "annotations"],
+  required: ["summary", "highestLeverageCriterionId", "criteria", "blockAnalysis", "annotations"],
 });
 
 function requireConfiguration() {
@@ -413,6 +450,7 @@ function validateAnalysisAnnotations(
 
     const { anchor } = annotation;
     if (anchor.length < 3 || anchor.length > 180 || anchor.trim().length < 3) continue;
+    if (/[\r\n]/.test(anchor)) continue;
 
     const start = block.body.indexOf(anchor);
     if (start < 0 || block.body.lastIndexOf(anchor) !== start) continue;
@@ -443,6 +481,65 @@ function validateAnalysisAnnotations(
   return accepted;
 }
 
+function validateBlockAnalysis(
+  blockAnalysis: ModelAnalysisOutput["blockAnalysis"],
+  input: { assignment: AssignmentInput; blocks: BlockInput[] },
+): BlockAnalysis[] {
+  const allowedBlockIds = new Set(input.blocks.map((block) => block.id));
+  const analysisByBlockId = new Map<string, ModelAnalysisOutput["blockAnalysis"][number]>();
+
+  for (const item of blockAnalysis) {
+    if (!allowedBlockIds.has(item.blockId) || analysisByBlockId.has(item.blockId)) continue;
+    analysisByBlockId.set(item.blockId, item);
+  }
+
+  const requirementById = new Map(input.assignment.requirements.map((requirement) => [requirement.id, requirement]));
+  return input.blocks.map((block) => {
+    const modelAnalysis = analysisByBlockId.get(block.id);
+    const hasStudentWriting = Boolean(block.body.trim() || (block.headingSource === "student" && block.heading.trim()));
+    const sectionName = (block.heading.trim() || "This block").slice(0, 60);
+    const taskFocus = input.assignment.task.trim() || "the imported assignment task";
+    const fallbackChecks = [
+      ...block.guidanceIds
+        .map((id) => requirementById.get(id))
+        .filter((requirement): requirement is RequirementInput => Boolean(requirement))
+        .map((requirement) => `${sectionName}: check how this section addresses ${requirement.text}`),
+      ...input.assignment.criteria.map((criterion) => `${sectionName}: check the evidence for ${criterion.name.toLowerCase()}.`),
+      ...input.assignment.requirements.map((requirement) => `${sectionName}: check how this section addresses ${requirement.text}`),
+      `${sectionName}: make its contribution to ${taskFocus} clear.`,
+      `${sectionName}: support its part of ${taskFocus} with relevant evidence.`,
+      `${sectionName}: explain how its reasoning advances ${taskFocus}.`,
+    ];
+    const checklist: BlockAnalysis["checklist"] = [];
+    const seenChecks = new Set<string>();
+
+    for (const check of modelAnalysis?.checklist ?? []) {
+      const text = check.text.trim().slice(0, 180).trim();
+      const key = text.toLowerCase();
+      if (!text || seenChecks.has(key)) continue;
+      seenChecks.add(key);
+      checklist.push({ text, met: hasStudentWriting ? check.met : false });
+      if (checklist.length === 6) break;
+    }
+    for (const fallbackText of fallbackChecks) {
+      if (checklist.length >= 3) break;
+      const text = fallbackText.trim().slice(0, 180).trim();
+      const key = text.toLowerCase();
+      if (!text || seenChecks.has(key)) continue;
+      seenChecks.add(key);
+      checklist.push({ text, met: false });
+    }
+
+    return {
+      blockId: block.id,
+      summary: hasStudentWriting
+        ? modelAnalysis?.summary.trim().slice(0, 600) || "Review this block against the imported rubric criteria. Simplifii did not return a block-specific summary for it."
+        : "There is no writing to assess in this block yet.",
+      checklist: checklist.slice(0, 6),
+    };
+  });
+}
+
 async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockInput[] }): Promise<AnalysisOutput> {
   const allowedCriterionIds = new Set(input.assignment.criteria.map((criterion) => criterion.id));
   const { output } = await generateText({
@@ -454,8 +551,13 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
       "Use literal, neuroinclusive language: diagnosis first, then one concrete action.",
       "Never rewrite the student's prose. Preserve student authorship and say only what they should inspect or change themselves.",
       "Use priority for the highest-leverage problem, attention for a meaningful improvement, and good only when the draft contains clear evidence for it.",
-      "Add inline annotations only when you can quote an exact, verbatim anchor from one supplied block body.",
-      "Every anchor must be 3 to 180 characters, appear exactly once in that block body, and never span blocks. Use only supplied criterionId and blockId values.",
+      "For blockAnalysis, return exactly one entry for every supplied block, including empty blocks. Use only its exact supplied blockId.",
+      "Treat the imported rubric criteria as the authority for analysis and priority. Use the task and requirements only to understand expected content; do not grade a block merely against the assignment brief. Give greater attention to higher-weight criteria.",
+      "Make each block summary brief, literal and neuroinclusive. Explain what that block currently contributes against the relevant imported rubric criteria and name its clearest next focus without rewriting or supplying replacement prose.",
+      "Give every block a checklist of three to six concise, section-specific checks. Derive each check from the imported rubric and requirements, evaluate it against this block, and do not merely repeat the assignment brief or give generic writing advice.",
+      "For an empty block, say there is no writing to assess yet and mark every checklist item false.",
+      "Add inline annotations only when you can quote an exact, verbatim anchor from one supplied block body. Student-sourced headings still count as writing in blockAnalysis, but do not anchor a comment to a heading.",
+      "Every anchor must be 3 to 180 characters, contain no line break, appear exactly once in that block body, and never span blocks. Use only supplied criterionId and blockId values.",
       "Use high for a red priority issue, med for a yellow worth-a-look issue, and low for green polish or a demonstrated strength.",
       "When the draft has enough text, aim for one to four useful inline annotations per criterion and include a balanced mix of priorities, improvements and genuine strengths where the evidence supports them.",
       "Do not repeat or overlap anchors in the same block. Return at most 30 annotations, and return none where no unique exact anchor exists.",
@@ -463,10 +565,10 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
     ].join(" "),
     output: Output.object({
       name: "rubric_feedback",
-      description: "Criterion-level guidance plus validated, verbatim-anchored inline comments without rewriting student text.",
+      description: "Criterion- and block-level guidance plus validated, verbatim-anchored inline comments without rewriting student text.",
       schema: analysisSchema,
     }),
-    prompt: `Analyse this draft against its rubric. Return one criterion entry for every criterion and up to 30 non-overlapping inline annotations.\n\n${promptData(input)}`,
+    prompt: `Analyse this draft against its rubric. Return one criterion entry for every criterion, one blockAnalysis summary and checklist for every supplied block, and up to 30 non-overlapping inline annotations.\n\n${promptData(input)}`,
   });
 
   const criteria = output.criteria.filter((criterion) => allowedCriterionIds.has(criterion.criterionId));
@@ -476,6 +578,7 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
       ? output.highestLeverageCriterionId
       : criteria.find((criterion) => criterion.tone === "priority")?.criterionId ?? input.assignment.criteria[0]?.id ?? "",
     criteria,
+    blockAnalysis: validateBlockAnalysis(output.blockAnalysis, input),
     annotations: validateAnalysisAnnotations(output.annotations, input),
   };
 }

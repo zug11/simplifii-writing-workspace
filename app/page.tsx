@@ -92,6 +92,14 @@ type DraftAnalysis = {
     diagnosis: string;
     action: string;
   }>;
+  blockAnalysis: Array<{
+    blockId: string;
+    summary: string;
+    checklist: Array<{
+      text: string;
+      met: boolean;
+    }>;
+  }>;
   annotations: EditorAnnotation[];
 };
 
@@ -252,6 +260,11 @@ function isCachedAssignment(item: unknown): item is CachedAssignment {
   if (item.annotationStateById !== undefined && (!isRecord(item.annotationStateById) || !Object.values(item.annotationStateById).every((state) => state === "open" || state === "edited" || state === "resolved"))) return false;
   if (item.analysisResult === null) return true;
   if (!isRecord(item.analysisResult) || typeof item.analysisResult.summary !== "string" || !Array.isArray(item.analysisResult.criteria)) return false;
+  if (item.analysisResult.blockAnalysis !== undefined && (!Array.isArray(item.analysisResult.blockAnalysis) || !item.analysisResult.blockAnalysis.every((analysis) => isRecord(analysis)
+    && typeof analysis.blockId === "string"
+    && typeof analysis.summary === "string"
+    && Array.isArray(analysis.checklist)
+    && analysis.checklist.every((check) => isRecord(check) && typeof check.text === "string" && typeof check.met === "boolean")))) return false;
   return item.analysisResult.annotations === undefined || (Array.isArray(item.analysisResult.annotations) && item.analysisResult.annotations.every((annotation) => isRecord(annotation)
     && typeof annotation.id === "string"
     && typeof annotation.criterionId === "string"
@@ -473,6 +486,10 @@ function formatBytes(bytes: number) {
 
 function wordCount(text: string) {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
+}
+
+function writingBlockWordCount(block: WritingBlock) {
+  return wordCount(block.body) + (block.headingSource === "student" ? wordCount(block.heading) : 0);
 }
 
 async function requestAi<T>(action: "extract" | "structure" | "structure-draft" | "allocate" | "analyse", input: unknown): Promise<T> {
@@ -1020,15 +1037,27 @@ function Workspace({
 }) {
   const requirementMap = useMemo(() => new Map(assignment.requirements.map((requirement) => [requirement.id, requirement])), [assignment.requirements]);
   const feedbackMap = useMemo(() => new Map(analysisResult?.criteria.map((criterion) => [criterion.criterionId, criterion]) ?? []), [analysisResult]);
+  const blockAnalysisMap = useMemo(() => new Map((analysisResult?.blockAnalysis ?? []).map((block) => [block.blockId, block])), [analysisResult]);
   const criterionMap = useMemo(() => new Map(assignment.criteria.map((criterion) => [criterion.id, criterion])), [assignment.criteria]);
   const highestLeverageCriterion = assignment.criteria.find((criterion) => criterion.id === analysisResult?.highestLeverageCriterionId);
-  const totalWords = blocks.reduce((total, block) => total + wordCount(block.body), 0);
+  const totalWords = blocks.reduce((total, block) => total + writingBlockWordCount(block), 0);
   const blockIds = useMemo(() => new Set(blocks.map((block) => block.id)), [blocks]);
   const allAnnotations = useMemo(
     () => (analysisResult?.annotations ?? []).filter((annotation) => blockIds.has(annotation.blockId) && criterionMap.has(annotation.criterionId)),
     [analysisResult, blockIds, criterionMap],
   );
+  const renderableAnnotations = useMemo(() => {
+    const bodyByBlockId = new Map(blocks.map((block) => [block.id, block.body]));
+    return allAnnotations.filter((annotation) => {
+      if ((annotationStateById[annotation.id] ?? "open") !== "open") return false;
+      const body = bodyByBlockId.get(annotation.blockId);
+      if (body === undefined) return false;
+      const start = body.indexOf(annotation.anchor);
+      return start >= 0 && body.lastIndexOf(annotation.anchor) === start;
+    });
+  }, [allAnnotations, annotationStateById, blocks]);
   const [expandedBlockIds, setExpandedBlockIds] = useState<Set<string>>(() => new Set());
+  const [renderedAnnotationIdsByBlock, setRenderedAnnotationIdsByBlock] = useState<Record<string, string[]>>({});
   const [activeCriterionId, setActiveCriterionId] = useState<string | null>(null);
   const [coachNote, setCoachNote] = useState<{ annotationId: string; pinned: boolean; left: number; top: number; maxHeight: number; anchor: HTMLElement } | null>(null);
   const [toast, setToast] = useState("");
@@ -1037,12 +1066,21 @@ function Workspace({
   const coachRef = useRef<HTMLDivElement>(null);
   const coachHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingAnnotationId = useRef<string | null>(null);
   const rubricRef = useRef<HTMLElement>(null);
   const criterionBarRef = useRef<HTMLDivElement>(null);
+  const renderedAnnotationIdSet = useMemo(
+    () => new Set(Object.values(renderedAnnotationIdsByBlock).flat()),
+    [renderedAnnotationIdsByBlock],
+  );
+  const displayedAnnotations = useMemo(
+    () => renderableAnnotations.filter((annotation) => renderedAnnotationIdSet.has(annotation.id)),
+    [renderableAnnotations, renderedAnnotationIdSet],
+  );
 
   const visibleAnnotations = useMemo(
-    () => activeCriterionId ? allAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId) : allAnnotations,
-    [activeCriterionId, allAnnotations],
+    () => activeCriterionId ? renderableAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId) : renderableAnnotations,
+    [activeCriterionId, renderableAnnotations],
   );
   const annotationsByBlock = useMemo(() => {
     const result = new Map<string, EditorAnnotation[]>();
@@ -1055,7 +1093,7 @@ function Workspace({
   }, [visibleAnnotations]);
   const activeCriterion = activeCriterionId ? criterionMap.get(activeCriterionId) : undefined;
   const activeCriterionAnnotations = activeCriterionId ? allAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId) : [];
-  const activeOpenCount = activeCriterionAnnotations.filter((annotation) => (annotationStateById[annotation.id] ?? "open") !== "resolved").length;
+  const activeOpenCount = displayedAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId).length;
   const activeEditedCount = activeCriterionAnnotations.filter((annotation) => annotationStateById[annotation.id] === "edited").length;
   const coachAnnotation = coachNote ? allAnnotations.find((annotation) => annotation.id === coachNote.annotationId) : undefined;
   const coachCriterion = coachAnnotation ? criterionMap.get(coachAnnotation.criterionId) : undefined;
@@ -1150,6 +1188,18 @@ function Workspace({
     else editorsRef.current.delete(blockId);
   }, []);
 
+  const reportRenderedAnnotations = useCallback((blockId: string, annotationIds: string[]) => {
+    const uniqueIds = [...new Set(annotationIds)];
+    setRenderedAnnotationIdsByBlock((current) => {
+      const previous = current[blockId] ?? [];
+      if (previous.length === uniqueIds.length && previous.every((id, index) => id === uniqueIds[index])) return current;
+      const next = { ...current };
+      if (uniqueIds.length) next[blockId] = uniqueIds;
+      else delete next[blockId];
+      return next;
+    });
+  }, []);
+
   const runEditorCommand = useCallback((command: EditorCommand) => {
     const selection = window.getSelection();
     const selectionElement = selection?.anchorNode instanceof HTMLElement
@@ -1182,27 +1232,48 @@ function Workspace({
     }, 260);
   }, []);
 
+  const revealAnnotation = useCallback((annotationId: string) => {
+    const mark = document.querySelector<HTMLElement>(`mark[data-annotation-id="${annotationId}"]`);
+    if (!mark) {
+      showToast("That sentence changed. Run the analysis again to place a fresh highlight.");
+      return;
+    }
+    mark.scrollIntoView({ behavior: "smooth", block: "center" });
+    mark.focus({ preventScroll: true });
+    mark.classList.remove("annotation-jump");
+    void mark.offsetWidth;
+    mark.classList.add("annotation-jump");
+    window.setTimeout(() => mark.classList.remove("annotation-jump"), 1400);
+    previewAnnotation(annotationId, mark, true);
+  }, [previewAnnotation, showToast]);
+
+  useEffect(() => {
+    const annotationId = pendingAnnotationId.current;
+    if (view !== "full-draft" || !annotationId || !renderedAnnotationIdSet.has(annotationId)) return;
+    pendingAnnotationId.current = null;
+    revealAnnotation(annotationId);
+  }, [renderedAnnotationIdSet, revealAnnotation, view]);
+
   const handleBodyChange = useCallback((blockId: string, value: string, html: string, editedAnnotationIds: string[]) => {
     onBody(blockId, value, html);
     if (editedAnnotationIds.length) onAnnotationsEdited(editedAnnotationIds);
   }, [onAnnotationsEdited, onBody]);
 
   const changeView = (nextView: ViewMode) => {
-    if (nextView === "guide") setActiveCriterionId(null);
+    if (nextView === "guide") {
+      pendingAnnotationId.current = null;
+      setActiveCriterionId(null);
+    }
     setCoachNote(null);
     onView(nextView);
   };
 
   const openCriterion = (criterionId: string) => {
-    const first = allAnnotations.find((annotation) => annotation.criterionId === criterionId && (annotationStateById[annotation.id] ?? "open") !== "resolved");
+    const first = displayedAnnotations.find((annotation) => annotation.criterionId === criterionId);
+    pendingAnnotationId.current = first?.id ?? null;
     setActiveCriterionId(criterionId);
     setCoachNote(null);
     changeView("full-draft");
-    if (first) {
-      setTimeout(() => {
-        document.querySelector<HTMLElement>(`mark[data-annotation-id="${first.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 140);
-    }
   };
 
   const leaveCriterion = () => {
@@ -1303,7 +1374,7 @@ function Workspace({
                     <div className="criterion-grid">
                       {assignment.criteria.map((criterion) => {
                         const feedback = feedbackMap.get(criterion.id);
-                        const annotationCount = allAnnotations.filter((annotation) => annotation.criterionId === criterion.id && (annotationStateById[annotation.id] ?? "open") !== "resolved").length;
+                        const annotationCount = displayedAnnotations.filter((annotation) => annotation.criterionId === criterion.id).length;
                         return (
                           <article className={`criterion-card ${feedback?.tone ?? criterion.tone}`} key={criterion.id}>
                             <div><strong>{criterion.name}</strong><span>{criterion.weight}%</span></div>
@@ -1321,10 +1392,29 @@ function Workspace({
               <div className="blocks-list">
                 {blocks.map((block, index) => {
                   const guidance = block.guidanceIds.map((id) => requirementMap.get(id)).filter((item): item is Requirement => Boolean(item));
-                  const words = wordCount(block.body);
+                  const blockReview = blockAnalysisMap.get(block.id);
+                  const checks = blockReview?.checklist.length
+                    ? blockReview.checklist
+                    : guidance.map((requirement) => ({ text: requirement.text, met: false }));
+                  const completedChecks = checks.filter((check) => check.met).length;
+                  const blockAnnotations = displayedAnnotations.filter((annotation) => annotation.blockId === block.id);
+                  const outstandingBlockAnnotations = allAnnotations.filter((annotation) => annotation.blockId === block.id && (annotationStateById[annotation.id] ?? "open") !== "resolved");
+                  const priorityCount = outstandingBlockAnnotations.filter((annotation) => annotation.severity === "high").length;
+                  const attentionCount = outstandingBlockAnnotations.filter((annotation) => annotation.severity === "med").length;
+                  const polishCount = outstandingBlockAnnotations.filter((annotation) => annotation.severity === "low").length;
+                  const staleFindingCount = outstandingBlockAnnotations.length - blockAnnotations.length;
+                  const words = writingBlockWordCount(block);
                   const displayHeading = block.heading.trim() || "this block";
-                  const status = words === 0 ? "empty" : words < 60 ? "priority" : words < 140 ? "attention" : "good";
-                  const statusLabel = status === "empty" ? "Not started" : status === "priority" ? "Needs work" : status === "attention" ? "Needs attention" : "On track";
+                  const status = words === 0
+                    ? "empty"
+                    : analysis === "complete" && analysisResult
+                      ? priorityCount > 0 ? "priority" : attentionCount > 0 || checks.some((check) => !check.met) ? "attention" : "good"
+                      : "attention";
+                  const statusLabel = words === 0
+                    ? "Not started"
+                    : analysis !== "complete" || !analysisResult
+                      ? "In progress"
+                      : status === "priority" ? "Needs work" : status === "attention" ? "Needs attention" : "On track";
                   const expanded = expandedBlockIds.has(block.id);
                   return (
                     <div className="block-wrap" key={block.id}>
@@ -1334,14 +1424,57 @@ function Workspace({
                           <div className="block-guide-top">
                             <span className="violet-dot" aria-hidden="true" />
                             <span className="guide-title">GUIDE{block.heading.trim() ? ` · ${block.heading.trim().toUpperCase()}` : ""}</span>
-                            <span className="guide-count">{guidance.length} things to hold</span>
+                            <span className="guide-count">{completedChecks}/{checks.length} steps</span>
                             <span className="block-status"><i />{statusLabel}</span>
                           </div>
                           <p>{guidance[0]?.text ?? "Write this section in the way that makes sense for your assignment."}</p>
-                          <div className="guidance-list">
-                            {guidance.slice(0, 5).map((requirement) => <span key={requirement.id}><i />{requirement.text}</span>)}
+                          <div className="guidance-list" aria-label={`${displayHeading} checklist`}>
+                            {checks.map((check, checkIndex) => (
+                              <span className={check.met ? "met" : "unmet"} key={`${block.id}-check-${checkIndex}`}>
+                                <i aria-hidden="true">{check.met ? "✓" : "·"}</i>
+                                <span className="visually-hidden">{check.met ? "Met: " : "Not yet met: "}</span>
+                                {check.text}
+                              </span>
+                            ))}
                           </div>
                         </div>
+                        {analysis === "running" ? (
+                          <div className="block-analysis block-analysis-running">
+                            <span><i /><i /><i /></span>Reading this block against the rubric…
+                          </div>
+                        ) : null}
+                        {analysis === "complete" && analysisResult ? (
+                          <section className="block-analysis" aria-label={`${displayHeading} rubric analysis`}>
+                            <div className={`block-analysis-meta ${status}`}>
+                              <i aria-hidden="true" />
+                              <span>Rubric reading · {words} words read</span>
+                              {priorityCount ? <span>· {priorityCount} to fix</span> : null}
+                              {attentionCount ? <span>· {attentionCount} to watch</span> : null}
+                              {polishCount ? <span>· {polishCount} {polishCount === 1 ? "strength or polish point" : "strengths or polish points"}</span> : null}
+                              {staleFindingCount ? <span>· {staleFindingCount} changed {staleFindingCount === 1 ? "finding needs" : "findings need"} a fresh analysis</span> : null}
+                              <span>· {blockAnnotations.length ? "select a finding to jump to its highlighted text" : "no exact text highlight in this block"}</span>
+                            </div>
+                            <p>{blockReview?.summary ?? (blockAnnotations.length
+                              ? "These findings are tied to the rubric. Select one to reveal its exact sentence and full comment."
+                              : "Run the analysis again to add a rubric reading for this block.")}</p>
+                            {blockAnnotations.length ? (
+                              <div className="block-findings">
+                                {blockAnnotations.map((annotation) => (
+                                    <button
+                                      className={`block-finding annotation-${annotation.severity}`}
+                                      type="button"
+                                      key={annotation.id}
+                                      onClick={() => revealAnnotation(annotation.id)}
+                                      aria-label={`${annotation.title}. Jump to highlighted text. ${annotation.what}`}
+                                    >
+                                      <i aria-hidden="true" />
+                                      <span><strong>{annotation.title}.</strong> {annotation.what}</span>
+                                    </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </section>
+                        ) : null}
                         <div className="block-editor-wrap">
                           {block.headingSource === "student" ? (
                             <input
@@ -1369,6 +1502,7 @@ function Workspace({
                             aria-label={`${displayHeading} draft text`}
                             placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${displayHeading.toLowerCase()} here…`}
                             onRegister={registerEditor}
+                            onAnnotationsRendered={reportRenderedAnnotations}
                             onChange={handleBodyChange}
                             onBlur={onBlur}
                             onAnnotationPreview={previewAnnotation}
@@ -1432,6 +1566,7 @@ function Workspace({
                       aria-label={`${block.heading.trim() || "This block"} draft text`}
                       placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${block.heading.toLowerCase()} here…`}
                       onRegister={registerEditor}
+                      onAnnotationsRendered={reportRenderedAnnotations}
                       onChange={handleBodyChange}
                       onBlur={onBlur}
                       onAnnotationPreview={previewAnnotation}
@@ -1545,7 +1680,11 @@ function WorkspaceApp() {
     setBlocks(record.blocks);
     setView(record.view);
     setAnalysis(record.analysisResult ? "complete" : "idle");
-    setAnalysisResult(record.analysisResult ? { ...record.analysisResult, annotations: record.analysisResult.annotations ?? [] } : null);
+    setAnalysisResult(record.analysisResult ? {
+      ...record.analysisResult,
+      blockAnalysis: record.analysisResult.blockAnalysis ?? [],
+      annotations: record.analysisResult.annotations ?? [],
+    } : null);
     setAnalysisStale(record.analysisStale ?? false);
     setAnnotationStateById(record.annotationStateById ?? {});
     setAnalysisError("");
@@ -1962,7 +2101,7 @@ function WorkspaceApp() {
     const locallyAllocated = reallocateGuidance(blocks, assignment.requirements);
     documentRevision.current += 1;
     setBlocks(locallyAllocated);
-    if (locallyAllocated.reduce((total, block) => total + wordCount(block.body), 0) < 20) return;
+    if (locallyAllocated.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) return;
 
     const originId = activeAssignmentIdRef.current;
     const originEpoch = assignmentEpoch.current;
@@ -1990,7 +2129,7 @@ function WorkspaceApp() {
   };
 
   const analyse = async () => {
-    if (blocks.reduce((total, block) => total + wordCount(block.body), 0) < 20) {
+    if (blocks.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) {
       setAnalysisError("Write a little more before asking Simplifii to analyse the draft.");
       return;
     }
@@ -2002,7 +2141,7 @@ function WorkspaceApp() {
     try {
       const result = await requestAi<DraftAnalysis>("analyse", {
         assignment,
-        blocks: blocks.map(({ id, heading, body, guidanceIds }) => ({ id, heading, body, guidanceIds })),
+        blocks: blocks.map(({ id, heading, headingSource, body, guidanceIds }) => ({ id, heading, headingSource, body, guidanceIds })),
       });
       if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) {
         if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");

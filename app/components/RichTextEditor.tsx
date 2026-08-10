@@ -39,6 +39,7 @@ type RichTextBodyProps = {
   ariaLabel: string;
   placeholder: string;
   onRegister: (blockId: string, editor: HTMLDivElement | null) => void;
+  onAnnotationsRendered: (blockId: string, annotationIds: string[]) => void;
   onChange: (blockId: string, value: string, html: string, editedAnnotationIds: string[]) => void;
   onBlur: () => void;
   onAnnotationPreview: (annotationId: string, anchor: HTMLElement, pinned: boolean) => void;
@@ -105,41 +106,72 @@ export function sanitiseEditorHtml(value: string) {
   return template.innerHTML;
 }
 
-function wrapAnnotation(root: DocumentFragment, annotation: EditorAnnotation, state: AnnotationState) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const textNodes: Text[] = [];
+type IndexedTextNode = { node: Text; start: number; end: number };
+
+function buildEditorTextIndex(root: ParentNode) {
+  const textNodes: IndexedTextNode[] = [];
   let combined = "";
-  let node = walker.nextNode();
-  while (node) {
-    const textNode = node as Text;
-    if (!textNode.parentElement?.closest("mark[data-annotation-id]")) {
-      textNodes.push(textNode);
-      combined += textNode.data;
+  const appendLineBreak = (force = false) => {
+    if (force || (combined && !combined.endsWith("\n"))) combined += "\n";
+  };
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textNode = node as Text;
+      const normalised = textNode.data.replaceAll("\u00a0", " ");
+      const start = combined.length;
+      combined += normalised;
+      textNodes.push({ node: textNode, start, end: combined.length });
+      return;
     }
-    node = walker.nextNode();
-  }
+    if (!(node instanceof Element)) return;
+    if (node.tagName === "BR") {
+      appendLineBreak(true);
+      return;
+    }
+    const isBlock = node.tagName === "DIV" || node.tagName === "P";
+    if (isBlock) appendLineBreak();
+    for (const child of node.childNodes) visit(child);
+    if (isBlock) appendLineBreak();
+  };
+  for (const child of root.childNodes) visit(child);
+  return { text: combined, textNodes };
+}
+
+function editorHtmlMatchesValue(html: string, value: string) {
+  if (typeof document === "undefined") return true;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const comparable = (text: string) => text
+    .replaceAll("\u00a0", " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\t\f\v ]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n+/g, "\n")
+    .trim();
+  return comparable(buildEditorTextIndex(template.content).text) === comparable(value);
+}
+
+function wrapAnnotation(root: DocumentFragment, annotation: EditorAnnotation, state: AnnotationState) {
+  const { text: combined, textNodes } = buildEditorTextIndex(root);
 
   const start = combined.indexOf(annotation.anchor);
   if (start < 0 || combined.lastIndexOf(annotation.anchor) !== start) return false;
   const end = start + annotation.anchor.length;
-  let cursor = 0;
   let startNode: Text | null = null;
   let endNode: Text | null = null;
   let startOffset = 0;
   let endOffset = 0;
 
-  for (const textNode of textNodes) {
-    const nextCursor = cursor + textNode.data.length;
-    if (!startNode && start >= cursor && start < nextCursor) {
-      startNode = textNode;
-      startOffset = start - cursor;
+  for (const entry of textNodes) {
+    if (!startNode && start >= entry.start && start < entry.end) {
+      startNode = entry.node;
+      startOffset = start - entry.start;
     }
-    if (endNode === null && end > cursor && end <= nextCursor) {
-      endNode = textNode;
-      endOffset = end - cursor;
+    if (endNode === null && end > entry.start && end <= entry.end) {
+      endNode = entry.node;
+      endOffset = end - entry.start;
       break;
     }
-    cursor = nextCursor;
   }
 
   if (!startNode || !endNode) return false;
@@ -315,6 +347,7 @@ export function RichTextBody({
   ariaLabel,
   placeholder,
   onRegister,
+  onAnnotationsRendered,
   onChange,
   onBlur,
   onAnnotationPreview,
@@ -323,7 +356,10 @@ export function RichTextBody({
   const editorRef = useRef<HTMLDivElement>(null);
   const emittedHtmlRef = useRef("");
   const renderedAnnotationSignatureRef = useRef("");
-  const baseHtml = html === undefined ? textToHtml(value) : html;
+  const suppliedHtml = html === undefined ? undefined : sanitiseEditorHtml(html);
+  const baseHtml = suppliedHtml !== undefined && editorHtmlMatchesValue(suppliedHtml, value)
+    ? suppliedHtml
+    : textToHtml(value);
   const visibleAnnotations = useMemo(
     () => annotations.filter((annotation) => (annotationStateById[annotation.id] ?? "open") !== "resolved"),
     [annotationStateById, annotations],
@@ -347,7 +383,12 @@ export function RichTextBody({
     restoreSelection(editor, selection);
     emittedHtmlRef.current = cleanBase;
     renderedAnnotationSignatureRef.current = annotationSignature;
-  }, [annotationSignature, annotationStateById, baseHtml, visibleAnnotations]);
+    onAnnotationsRendered(blockId, [...editor.querySelectorAll<HTMLElement>("mark[data-annotation-id]")]
+      .map((mark) => mark.dataset.annotationId)
+      .filter((id): id is string => Boolean(id)));
+  }, [annotationSignature, annotationStateById, baseHtml, blockId, onAnnotationsRendered, visibleAnnotations]);
+
+  useEffect(() => () => onAnnotationsRendered(blockId, []), [blockId, onAnnotationsRendered]);
 
   useEffect(() => {
     const editor = editorRef.current;
