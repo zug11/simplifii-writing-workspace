@@ -76,6 +76,17 @@ type AllocationOutput = {
   allocations: Array<{ blockId: string; guidanceIds: string[] }>;
 };
 
+type AnalysisAnnotation = {
+  id: string;
+  criterionId: string;
+  blockId: string;
+  severity: "high" | "med" | "low";
+  anchor: string;
+  title: string;
+  what: string;
+  how: string;
+};
+
 type AnalysisOutput = {
   summary: string;
   highestLeverageCriterionId: string;
@@ -85,11 +96,17 @@ type AnalysisOutput = {
     diagnosis: string;
     action: string;
   }>;
+  annotations: AnalysisAnnotation[];
+};
+
+type ModelAnalysisOutput = Omit<AnalysisOutput, "annotations"> & {
+  annotations: Array<Omit<AnalysisAnnotation, "id">>;
 };
 
 const DEFAULT_MODEL = "gpt-5.6-terra";
 const MAX_INPUT_CHARACTERS = 180_000;
 const MAX_AI_REQUEST_CHARACTERS = 35_000_000;
+const MAX_ANALYSIS_ANNOTATIONS = 30;
 const NO_STORE_HEADERS = { "cache-control": "private, no-store, max-age=0" };
 
 const extractionSchema = jsonSchema<ExtractionOutput>({
@@ -192,7 +209,7 @@ const allocationSchema = jsonSchema<AllocationOutput>({
   required: ["allocations"],
 });
 
-const analysisSchema = jsonSchema<AnalysisOutput>({
+const analysisSchema = jsonSchema<ModelAnalysisOutput>({
   type: "object",
   additionalProperties: false,
   properties: {
@@ -212,8 +229,26 @@ const analysisSchema = jsonSchema<AnalysisOutput>({
         required: ["criterionId", "tone", "diagnosis", "action"],
       },
     },
+    annotations: {
+      type: "array",
+      maxItems: MAX_ANALYSIS_ANNOTATIONS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          criterionId: { type: "string" },
+          blockId: { type: "string" },
+          severity: { type: "string", enum: ["high", "med", "low"] },
+          anchor: { type: "string", minLength: 3, maxLength: 180 },
+          title: { type: "string" },
+          what: { type: "string" },
+          how: { type: "string" },
+        },
+        required: ["criterionId", "blockId", "severity", "anchor", "title", "what", "how"],
+      },
+    },
   },
-  required: ["summary", "highestLeverageCriterionId", "criteria"],
+  required: ["summary", "highestLeverageCriterionId", "criteria", "annotations"],
 });
 
 function requireConfiguration() {
@@ -360,7 +395,55 @@ async function allocateGuidance(input: { requirements: RequirementInput[]; block
   };
 }
 
-async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockInput[] }) {
+function validateAnalysisAnnotations(
+  annotations: ModelAnalysisOutput["annotations"],
+  input: { assignment: AssignmentInput; blocks: BlockInput[] },
+): AnalysisAnnotation[] {
+  const allowedCriterionIds = new Set(input.assignment.criteria.map((criterion) => criterion.id));
+  const blockById = new Map(input.blocks.map((block) => [block.id, block]));
+  const acceptedRanges = new Map<string, Array<{ start: number; end: number }>>();
+  const accepted: AnalysisAnnotation[] = [];
+
+  for (const annotation of annotations) {
+    if (accepted.length >= MAX_ANALYSIS_ANNOTATIONS) break;
+    if (!allowedCriterionIds.has(annotation.criterionId)) continue;
+
+    const block = blockById.get(annotation.blockId);
+    if (!block) continue;
+
+    const { anchor } = annotation;
+    if (anchor.length < 3 || anchor.length > 180 || anchor.trim().length < 3) continue;
+
+    const start = block.body.indexOf(anchor);
+    if (start < 0 || block.body.lastIndexOf(anchor) !== start) continue;
+
+    const end = start + anchor.length;
+    const blockRanges = acceptedRanges.get(block.id) ?? [];
+    if (blockRanges.some((range) => start < range.end && range.start < end)) continue;
+
+    const title = annotation.title.trim();
+    const what = annotation.what.trim();
+    const how = annotation.how.trim();
+    if (!title || !what || !how) continue;
+
+    blockRanges.push({ start, end });
+    acceptedRanges.set(block.id, blockRanges);
+    accepted.push({
+      id: `annotation-${accepted.length + 1}`,
+      criterionId: annotation.criterionId,
+      blockId: annotation.blockId,
+      severity: annotation.severity,
+      anchor,
+      title,
+      what,
+      how,
+    });
+  }
+
+  return accepted;
+}
+
+async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockInput[] }): Promise<AnalysisOutput> {
   const allowedCriterionIds = new Set(input.assignment.criteria.map((criterion) => criterion.id));
   const { output } = await generateText({
     model: requireConfiguration(),
@@ -371,13 +454,19 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
       "Use literal, neuroinclusive language: diagnosis first, then one concrete action.",
       "Never rewrite the student's prose. Preserve student authorship and say only what they should inspect or change themselves.",
       "Use priority for the highest-leverage problem, attention for a meaningful improvement, and good only when the draft contains clear evidence for it.",
+      "Add inline annotations only when you can quote an exact, verbatim anchor from one supplied block body.",
+      "Every anchor must be 3 to 180 characters, appear exactly once in that block body, and never span blocks. Use only supplied criterionId and blockId values.",
+      "Use high for a red priority issue, med for a yellow worth-a-look issue, and low for green polish or a demonstrated strength.",
+      "When the draft has enough text, aim for one to four useful inline annotations per criterion and include a balanced mix of priorities, improvements and genuine strengths where the evidence supports them.",
+      "Do not repeat or overlap anchors in the same block. Return at most 30 annotations, and return none where no unique exact anchor exists.",
+      "For each annotation, title the point briefly, explain what the student should notice in what, and use how for one literal action they can take themselves. Do not supply replacement prose.",
     ].join(" "),
     output: Output.object({
       name: "rubric_feedback",
-      description: "Criterion-by-criterion diagnosis and one actionable next step without rewriting student text.",
+      description: "Criterion-level guidance plus validated, verbatim-anchored inline comments without rewriting student text.",
       schema: analysisSchema,
     }),
-    prompt: `Analyse this draft against its rubric. Return one entry for every criterion.\n\n${promptData(input)}`,
+    prompt: `Analyse this draft against its rubric. Return one criterion entry for every criterion and up to 30 non-overlapping inline annotations.\n\n${promptData(input)}`,
   });
 
   const criteria = output.criteria.filter((criterion) => allowedCriterionIds.has(criterion.criterionId));
@@ -387,6 +476,7 @@ async function analyseDraft(input: { assignment: AssignmentInput; blocks: BlockI
       ? output.highestLeverageCriterionId
       : criteria.find((criterion) => criterion.tone === "priority")?.criterionId ?? input.assignment.criteria[0]?.id ?? "",
     criteria,
+    annotations: validateAnalysisAnnotations(output.annotations, input),
   };
 }
 

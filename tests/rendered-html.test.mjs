@@ -121,9 +121,10 @@ test("places every word of an existing draft into blocks without rewriting it", 
   assert.deepEqual(blockTokens([unbrokenBlock]), writingTokens(unbrokenDraft));
 });
 
-test("keeps the approved P0 choices, local assignment cache, AI wiring and light-theme contract", async () => {
-  const [page, css, layout, packageJson, aiRoute, inviteRoute, inviteAccess, envExample, gitignore, browserCache, hostingConfig, draftStructure] = await Promise.all([
+test("keeps the approved P0 choices, rich editor, local assignment cache, AI wiring and light-theme contract", async () => {
+  const [page, richEditor, css, layout, packageJson, aiRoute, inviteRoute, inviteAccess, envExample, gitignore, browserCache, hostingConfig, draftStructure] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/RichTextEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -178,6 +179,16 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(page, /salvageCachedAssignments/);
   assert.match(page, /Local cache needs attention/);
   assert.match(page, /analysisResult/);
+  assert.match(page, /bodyHtml/);
+  assert.match(page, /annotationStateById/);
+  assert.match(page, /RichTextBody/);
+  assert.match(page, /EditorToolbar/);
+  assert.match(page, /See \$\{annotationCount\} highlight/);
+  assert.match(page, /Nothing is rewritten for you\. What changes is your call\./);
+  assert.match(page, /currentState === "edited" \|\| firstOccurrence !== lastOccurrence/);
+  assert.match(page, /onRemove=\{removeBlock\}/);
+  assert.match(page, /Natural height/);
+  assert.match(page, />Remove</);
   assert.match(page, /assignmentMenu=/);
   assert.match(page, /function InviteBoundary/);
   assert.match(page, /Enter your invite code\./);
@@ -205,6 +216,11 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(aiRoute, /process\.env\.OPENAI_API_KEY/);
   assert.match(aiRoute, /type: "file" as const/);
   assert.match(aiRoute, /existing_draft_blocks/);
+  assert.match(aiRoute, /rubric_feedback/);
+  assert.match(aiRoute, /annotations/);
+  assert.match(aiRoute, /severity: "high" \| "med" \| "low"/);
+  assert.match(aiRoute, /block\.body\.lastIndexOf\(anchor\) !== start/);
+  assert.match(aiRoute, /Never rewrite the student's prose/);
   assert.match(aiRoute, /segmentIds/);
   assert.match(aiRoute, /file\.role !== "Current draft"/);
   assert.match(aiRoute, /Never rewrite the student's prose/);
@@ -237,9 +253,28 @@ test("keeps the approved P0 choices, local assignment cache, AI wiring and light
   assert.match(draftStructure, /projectDraftIntoOneBlock/);
   assert.match(draftStructure, /MAX_DRAFT_BLOCKS/);
 
+  assert.match(richEditor, /contentEditable/);
+  assert.match(richEditor, /role="textbox"/);
+  assert.match(richEditor, /sanitiseEditorHtml/);
+  assert.match(richEditor, /captureSelection/);
+  assert.match(richEditor, /restoreSelection/);
+  assert.match(richEditor, /onPaste=\{handlePaste\}/);
+  assert.match(richEditor, /onDrop=\{handleDrop\}/);
+  assert.match(richEditor, /combined\.lastIndexOf\(annotation\.anchor\) !== start/);
+  assert.match(richEditor, /if \(state === "open"\) wrapAnnotation/);
+  assert.match(richEditor, /mark\.dataset\.annotationId/);
+  assert.match(richEditor, /annotation-mark annotation-\$\{annotation\.severity\}/);
+  assert.match(richEditor, /"undo" \| "redo" \| "justifyLeft"/);
+  assert.match(richEditor, /aria-label="Text formatting"/);
+
   assert.match(css, /--bg:\s*#f6f5f2/);
   assert.match(css, /--card:\s*#ffffff/);
   assert.match(css, /color-scheme:\s*light/);
+  assert.match(css, /\.annotation-high/);
+  assert.match(css, /\.annotation-med/);
+  assert.match(css, /\.annotation-low/);
+  assert.match(css, /\.coach-note/);
+  assert.match(css, /\.criterion-focus-bar/);
   assert.doesNotMatch(css, /prefers-color-scheme:\s*dark/);
   assert.match(layout, /lang="en-AU"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

@@ -2,6 +2,7 @@
 
 import {
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   useCallback,
@@ -11,6 +12,13 @@ import {
   useState,
 } from "react";
 
+import {
+  EditorToolbar,
+  RichTextBody,
+  type AnnotationState,
+  type EditorAnnotation,
+  type EditorCommand,
+} from "@/app/components/RichTextEditor";
 import { prepareBrowserCache, quarantineUnreadableBrowserCache, readBrowserCache, writeBrowserCache, writeBrowserJournal } from "@/lib/browser-cache";
 import { projectDraftIntoBlocks, projectDraftIntoOneBlock, segmentDraft, type DraftGrouping } from "@/lib/draft-structure";
 
@@ -61,6 +69,7 @@ type WritingBlock = {
   heading: string;
   headingSource: "simplifii" | "student";
   body: string;
+  bodyHtml?: string;
   guidanceIds: string[];
 };
 
@@ -83,6 +92,7 @@ type DraftAnalysis = {
     diagnosis: string;
     action: string;
   }>;
+  annotations: EditorAnnotation[];
 };
 
 type CachedAssignment = {
@@ -99,6 +109,8 @@ type CachedAssignment = {
   blocks: WritingBlock[];
   view: ViewMode;
   analysisResult: DraftAnalysis | null;
+  analysisStale?: boolean;
+  annotationStateById?: Record<string, AnnotationState>;
 };
 
 type CachedAppState = {
@@ -213,6 +225,8 @@ function blankCachedAssignment(): CachedAssignment {
     blocks: [],
     view: "guide",
     analysisResult: null,
+    analysisStale: false,
+    annotationStateById: {},
   };
 }
 
@@ -233,8 +247,20 @@ function isCachedAssignment(item: unknown): item is CachedAssignment {
   if (typeof assignment.dueLabel !== "string" || typeof assignment.wordLimit !== "number" || typeof assignment.task !== "string") return false;
   if (!Array.isArray(assignment.requirements) || !Array.isArray(assignment.criteria)) return false;
   if (!item.files.every((file) => isRecord(file) && typeof file.id === "string" && typeof file.name === "string" && typeof file.text === "string")) return false;
-  if (!item.blocks.every((block) => isRecord(block) && typeof block.id === "string" && typeof block.heading === "string" && typeof block.body === "string" && Array.isArray(block.guidanceIds))) return false;
-  return item.analysisResult === null || (isRecord(item.analysisResult) && typeof item.analysisResult.summary === "string" && Array.isArray(item.analysisResult.criteria));
+  if (!item.blocks.every((block) => isRecord(block) && typeof block.id === "string" && typeof block.heading === "string" && typeof block.body === "string" && (block.bodyHtml === undefined || typeof block.bodyHtml === "string") && Array.isArray(block.guidanceIds))) return false;
+  if (item.analysisStale !== undefined && typeof item.analysisStale !== "boolean") return false;
+  if (item.annotationStateById !== undefined && (!isRecord(item.annotationStateById) || !Object.values(item.annotationStateById).every((state) => state === "open" || state === "edited" || state === "resolved"))) return false;
+  if (item.analysisResult === null) return true;
+  if (!isRecord(item.analysisResult) || typeof item.analysisResult.summary !== "string" || !Array.isArray(item.analysisResult.criteria)) return false;
+  return item.analysisResult.annotations === undefined || (Array.isArray(item.analysisResult.annotations) && item.analysisResult.annotations.every((annotation) => isRecord(annotation)
+    && typeof annotation.id === "string"
+    && typeof annotation.criterionId === "string"
+    && typeof annotation.blockId === "string"
+    && (annotation.severity === "high" || annotation.severity === "med" || annotation.severity === "low")
+    && typeof annotation.anchor === "string"
+    && typeof annotation.title === "string"
+    && typeof annotation.what === "string"
+    && typeof annotation.how === "string"));
 }
 
 function isCachedAppState(value: unknown): value is CachedAppState {
@@ -954,14 +980,20 @@ function Workspace({
   view,
   analysis,
   analysisResult,
+  analysisStale,
   analysisError,
+  annotationStateById,
   focusHeadingId,
   onView,
   onHeading,
   onBody,
   onBlur,
   onInsert,
+  onRemove,
   onAnalyse,
+  onAnnotationsEdited,
+  onAnnotationResolved,
+  onAnnotationsRechecked,
   saveLabel,
 }: {
   assignment: Assignment;
@@ -970,25 +1002,249 @@ function Workspace({
   view: ViewMode;
   analysis: AnalysisState;
   analysisResult: DraftAnalysis | null;
+  analysisStale: boolean;
   analysisError: string;
+  annotationStateById: Record<string, AnnotationState>;
   focusHeadingId: string | null;
   onView: (view: ViewMode) => void;
   onHeading: (blockId: string, value: string) => void;
-  onBody: (blockId: string, value: string) => void;
+  onBody: (blockId: string, value: string, html: string) => void;
   onBlur: () => void;
   onInsert: (anchorId: string, position: "before" | "after") => void;
+  onRemove: (blockId: string) => void;
   onAnalyse: () => void;
+  onAnnotationsEdited: (annotationIds: string[]) => void;
+  onAnnotationResolved: (annotationId: string) => void;
+  onAnnotationsRechecked: (states: Record<string, AnnotationState>) => void;
   saveLabel: string;
 }) {
   const requirementMap = useMemo(() => new Map(assignment.requirements.map((requirement) => [requirement.id, requirement])), [assignment.requirements]);
   const feedbackMap = useMemo(() => new Map(analysisResult?.criteria.map((criterion) => [criterion.criterionId, criterion]) ?? []), [analysisResult]);
+  const criterionMap = useMemo(() => new Map(assignment.criteria.map((criterion) => [criterion.id, criterion])), [assignment.criteria]);
   const highestLeverageCriterion = assignment.criteria.find((criterion) => criterion.id === analysisResult?.highestLeverageCriterionId);
   const totalWords = blocks.reduce((total, block) => total + wordCount(block.body), 0);
+  const blockIds = useMemo(() => new Set(blocks.map((block) => block.id)), [blocks]);
+  const allAnnotations = useMemo(
+    () => (analysisResult?.annotations ?? []).filter((annotation) => blockIds.has(annotation.blockId) && criterionMap.has(annotation.criterionId)),
+    [analysisResult, blockIds, criterionMap],
+  );
+  const [expandedBlockIds, setExpandedBlockIds] = useState<Set<string>>(() => new Set());
+  const [activeCriterionId, setActiveCriterionId] = useState<string | null>(null);
+  const [coachNote, setCoachNote] = useState<{ annotationId: string; pinned: boolean; left: number; top: number; maxHeight: number; anchor: HTMLElement } | null>(null);
+  const [toast, setToast] = useState("");
+  const [criterionBarHeight, setCriterionBarHeight] = useState(0);
+  const editorsRef = useRef(new Map<string, HTMLDivElement>());
+  const coachRef = useRef<HTMLDivElement>(null);
+  const coachHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rubricRef = useRef<HTMLElement>(null);
+  const criterionBarRef = useRef<HTMLDivElement>(null);
+
+  const visibleAnnotations = useMemo(
+    () => activeCriterionId ? allAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId) : allAnnotations,
+    [activeCriterionId, allAnnotations],
+  );
+  const annotationsByBlock = useMemo(() => {
+    const result = new Map<string, EditorAnnotation[]>();
+    for (const annotation of visibleAnnotations) {
+      const current = result.get(annotation.blockId) ?? [];
+      current.push(annotation);
+      result.set(annotation.blockId, current);
+    }
+    return result;
+  }, [visibleAnnotations]);
+  const activeCriterion = activeCriterionId ? criterionMap.get(activeCriterionId) : undefined;
+  const activeCriterionAnnotations = activeCriterionId ? allAnnotations.filter((annotation) => annotation.criterionId === activeCriterionId) : [];
+  const activeOpenCount = activeCriterionAnnotations.filter((annotation) => (annotationStateById[annotation.id] ?? "open") !== "resolved").length;
+  const activeEditedCount = activeCriterionAnnotations.filter((annotation) => annotationStateById[annotation.id] === "edited").length;
+  const coachAnnotation = coachNote ? allAnnotations.find((annotation) => annotation.id === coachNote.annotationId) : undefined;
+  const coachCriterion = coachAnnotation ? criterionMap.get(coachAnnotation.criterionId) : undefined;
 
   useEffect(() => {
     if (!focusHeadingId) return;
     document.querySelector<HTMLInputElement>(`[data-block-heading-id="${focusHeadingId}"]`)?.focus();
   }, [focusHeadingId]);
+
+  useEffect(() => () => {
+    if (coachHideTimer.current) clearTimeout(coachHideTimer.current);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      if (coachRef.current?.contains(target) || target.closest("mark[data-annotation-id]")) return;
+      setCoachNote((current) => current?.pinned ? null : current);
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (coachNote) {
+        coachNote.anchor.focus();
+        setCoachNote(null);
+        return;
+      }
+      if (activeCriterionId) {
+        setActiveCriterionId(null);
+        onView("guide");
+        setTimeout(() => rubricRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activeCriterionId, coachNote, onView]);
+
+  useEffect(() => {
+    if (coachNote?.pinned && document.activeElement === coachNote.anchor) coachRef.current?.focus();
+  }, [coachNote]);
+
+  const coachAnchor = coachNote?.anchor;
+  const coachAnnotationId = coachNote?.annotationId;
+
+  useEffect(() => {
+    if (!coachAnchor || !coachAnnotationId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const note = coachRef.current;
+      if (!note) return;
+      const anchorRect = coachAnchor.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const fullHeight = Math.min(note.scrollHeight, viewportHeight - 16);
+      const below = anchorRect.bottom + 10;
+      const top = below + fullHeight <= viewportHeight - 8
+        ? below
+        : Math.max(8, Math.min(anchorRect.top - fullHeight - 10, viewportHeight - fullHeight - 8));
+      const maxHeight = Math.max(120, viewportHeight - top - 8);
+      setCoachNote((current) => {
+        if (!current || current.annotationId !== coachAnnotationId || current.anchor !== coachAnchor) return current;
+        if (Math.abs(current.top - top) < 1 && Math.abs(current.maxHeight - maxHeight) < 1) return current;
+        return { ...current, top, maxHeight };
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [coachAnchor, coachAnnotationId]);
+
+  useEffect(() => {
+    const bar = criterionBarRef.current;
+    if (!bar || !activeCriterionId || typeof ResizeObserver === "undefined") return;
+    const updateHeight = () => setCriterionBarHeight(Math.ceil(bar.getBoundingClientRect().height));
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(bar);
+    const frame = window.requestAnimationFrame(updateHeight);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [activeCriterionId]);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(message);
+    toastTimer.current = setTimeout(() => setToast(""), 2800);
+  }, []);
+
+  const registerEditor = useCallback((blockId: string, editor: HTMLDivElement | null) => {
+    if (editor) editorsRef.current.set(blockId, editor);
+    else editorsRef.current.delete(blockId);
+  }, []);
+
+  const runEditorCommand = useCallback((command: EditorCommand) => {
+    const selection = window.getSelection();
+    const selectionElement = selection?.anchorNode instanceof HTMLElement
+      ? selection.anchorNode
+      : selection?.anchorNode?.parentElement;
+    const selectedEditor = selectionElement?.closest<HTMLDivElement>("[data-rich-editor]");
+    const editor = selectedEditor ?? editorsRef.current.values().next().value;
+    if (!editor) return;
+    if (!selectedEditor) editor.focus({ preventScroll: true });
+    document.execCommand(command, false);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }, []);
+
+  const previewAnnotation = useCallback((annotationId: string, anchor: HTMLElement, pinned: boolean) => {
+    if (coachHideTimer.current) clearTimeout(coachHideTimer.current);
+    setCoachNote((current) => {
+      if (current?.pinned && !pinned) return current;
+      const rect = anchor.getBoundingClientRect();
+      const width = Math.min(352, window.innerWidth - 24);
+      const left = Math.max(12, Math.min(rect.left - 10, window.innerWidth - width - 12));
+      const below = rect.bottom + 10;
+      return { annotationId, pinned, left, top: below, maxHeight: window.innerHeight - 16, anchor };
+    });
+  }, []);
+
+  const hideAnnotationSoon = useCallback(() => {
+    if (coachHideTimer.current) clearTimeout(coachHideTimer.current);
+    coachHideTimer.current = setTimeout(() => {
+      setCoachNote((current) => current?.pinned ? current : null);
+    }, 260);
+  }, []);
+
+  const handleBodyChange = useCallback((blockId: string, value: string, html: string, editedAnnotationIds: string[]) => {
+    onBody(blockId, value, html);
+    if (editedAnnotationIds.length) onAnnotationsEdited(editedAnnotationIds);
+  }, [onAnnotationsEdited, onBody]);
+
+  const changeView = (nextView: ViewMode) => {
+    if (nextView === "guide") setActiveCriterionId(null);
+    setCoachNote(null);
+    onView(nextView);
+  };
+
+  const openCriterion = (criterionId: string) => {
+    const first = allAnnotations.find((annotation) => annotation.criterionId === criterionId && (annotationStateById[annotation.id] ?? "open") !== "resolved");
+    setActiveCriterionId(criterionId);
+    setCoachNote(null);
+    changeView("full-draft");
+    if (first) {
+      setTimeout(() => {
+        document.querySelector<HTMLElement>(`mark[data-annotation-id="${first.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 140);
+    }
+  };
+
+  const leaveCriterion = () => {
+    setActiveCriterionId(null);
+    setCoachNote(null);
+    changeView("guide");
+    setTimeout(() => rubricRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  };
+
+  const recheckCriterion = () => {
+    if (!activeCriterionId) return;
+    const next = { ...annotationStateById };
+    let addressed = 0;
+    for (const annotation of activeCriterionAnnotations) {
+      const block = blocks.find((candidate) => candidate.id === annotation.blockId);
+      const firstOccurrence = block?.body.indexOf(annotation.anchor) ?? -1;
+      const lastOccurrence = block?.body.lastIndexOf(annotation.anchor) ?? -1;
+      const currentState = next[annotation.id] ?? "open";
+      if (!block || firstOccurrence < 0 || currentState === "resolved") {
+        next[annotation.id] = "resolved";
+        addressed += 1;
+      } else if (currentState === "edited" || firstOccurrence !== lastOccurrence) {
+        // Once the original marked range has changed, a matching copy elsewhere
+        // cannot safely prove that the feedback still belongs there. A fresh
+        // analysis run is the only operation allowed to create a new anchor.
+        next[annotation.id] = "edited";
+      } else {
+        next[annotation.id] = "open";
+      }
+    }
+    onAnnotationsRechecked(next);
+    setCoachNote(null);
+    showToast(addressed === activeCriterionAnnotations.length
+      ? `All ${addressed} addressed on this criterion.`
+      : `${addressed} of ${activeCriterionAnnotations.length} addressed. The rest stay highlighted.`);
+  };
+
+  const closeCoach = () => {
+    const anchor = coachNote?.anchor;
+    setCoachNote(null);
+    anchor?.focus();
+  };
 
   return (
     <div className="workspace-shell">
@@ -1005,17 +1261,30 @@ function Workspace({
         <button className="text-button" type="button">History</button>
         <button className="text-button" type="button" aria-label="Reading settings">Aa</button>
         <div className="view-toggle" role="group" aria-label="Writing view">
-          <button className={view === "guide" ? "active" : ""} type="button" aria-label="Guide blocks" title="Guide blocks" onClick={() => onView("guide")}><ViewIcon mode="guide" /></button>
-          <button className={view === "full-draft" ? "active" : ""} type="button" aria-label="Full draft" title="Full draft" onClick={() => onView("full-draft")}><ViewIcon mode="full-draft" /></button>
+          <button className={view === "guide" ? "active" : ""} type="button" aria-label="Guide blocks" title="Guide blocks" onClick={() => changeView("guide")}><ViewIcon mode="guide" /></button>
+          <button className={view === "full-draft" ? "active" : ""} type="button" aria-label="Full draft" title="Full draft" onClick={() => changeView("full-draft")}><ViewIcon mode="full-draft" /></button>
         </div>
         <button className="export-button" type="button">Export</button>
       </header>
 
-      <main className="workspace-scroll">
+      <main className="workspace-scroll" style={{ "--criterion-bar-height": `${criterionBarHeight}px` } as CSSProperties}>
+        {activeCriterion ? (
+          <div className="criterion-focus-bar" ref={criterionBarRef}>
+            <div>
+              <span className="criterion-focus-dot" aria-hidden="true" />
+              <strong>{activeCriterion.name.toUpperCase()}</strong>
+              <span>{activeCriterion.weight}% of the mark</span>
+              <p>{activeOpenCount} highlights. Hover or focus one to read the note; edit the text and Re-check.</p>
+              <span className="criterion-focus-spacer" />
+              <button className={activeEditedCount ? "recheck-button pulse" : "recheck-button"} type="button" onClick={recheckCriterion}>Re-check</button>
+              <button className="back-to-rubric" type="button" onClick={leaveCriterion}>Back to rubric</button>
+            </div>
+          </div>
+        ) : null}
         <div className="workspace-column">
           {view === "guide" ? (
             <div className="guide-layout">
-              <section className="rubric-section">
+              <section className="rubric-section" ref={rubricRef}>
                 <div className="rubric-heading">
                   <div><span className="review-label">RUBRIC</span><p>Marked against the imported criteria.</p></div>
                   {analysis === "idle" ? <button className="primary-button small" type="button" onClick={onAnalyse}>Analyse my draft</button> : null}
@@ -1029,17 +1298,18 @@ function Workspace({
                       <strong>Next focus</strong>
                       <div><span>{highestLeverageCriterion?.name ?? "The clearest next step"}</span> has the highest leverage in this draft.</div>
                       <div>{analysisResult.summary}</div>
-                      <p>This is guidance against the rubric—not a mark.</p>
+                      <p>{analysisStale ? "Your draft changed after this analysis. The comments remain anchored; run again when you want a fresh reading." : "This is guidance against the rubric—not a mark."}</p>
                     </div>
                     <div className="criterion-grid">
                       {assignment.criteria.map((criterion) => {
                         const feedback = feedbackMap.get(criterion.id);
+                        const annotationCount = allAnnotations.filter((annotation) => annotation.criterionId === criterion.id && (annotationStateById[annotation.id] ?? "open") !== "resolved").length;
                         return (
                           <article className={`criterion-card ${feedback?.tone ?? criterion.tone}`} key={criterion.id}>
                             <div><strong>{criterion.name}</strong><span>{criterion.weight}%</span></div>
                             <p>{feedback?.diagnosis ?? criterion.description}</p>
                             <p className="criterion-action"><strong>Next:</strong> {feedback?.action ?? "Review this criterion against the current draft."}</p>
-                            <button type="button" onClick={() => onView("full-draft")}>Open full draft</button>
+                            <button type="button" disabled={annotationCount === 0} onClick={() => openCriterion(criterion.id)}>{annotationCount ? `See ${annotationCount} highlight${annotationCount === 1 ? "" : "s"} in the draft` : "No inline highlights for this criterion"}</button>
                           </article>
                         );
                       })}
@@ -1055,10 +1325,11 @@ function Workspace({
                   const displayHeading = block.heading.trim() || "this block";
                   const status = words === 0 ? "empty" : words < 60 ? "priority" : words < 140 ? "attention" : "good";
                   const statusLabel = status === "empty" ? "Not started" : status === "priority" ? "Needs work" : status === "attention" ? "Needs attention" : "On track";
+                  const expanded = expandedBlockIds.has(block.id);
                   return (
                     <div className="block-wrap" key={block.id}>
                       {index === 0 ? <PlusButton label="Add a block above" onClick={() => onInsert(block.id, "before")} /> : null}
-                      <article className={`writing-block ${status}`}>
+                      <article className={`writing-block ${status}${expanded ? " is-expanded" : ""}`}>
                         <div className="block-guide">
                           <div className="block-guide-top">
                             <span className="violet-dot" aria-hidden="true" />
@@ -1082,22 +1353,42 @@ function Workspace({
                               onKeyDown={(event) => {
                                 if (event.key !== "Enter") return;
                                 event.preventDefault();
-                                event.currentTarget.parentElement?.querySelector("textarea")?.focus();
+                                event.currentTarget.parentElement?.querySelector<HTMLElement>("[data-rich-editor]")?.focus();
                               }}
                               aria-label="Section heading"
                               placeholder="Write the first sentence — this becomes the section heading"
                             />
                           ) : null}
-                          <textarea
-                            className="block-editor"
+                          <RichTextBody
+                            blockId={block.id}
                             value={block.body}
-                            onChange={(event) => onBody(block.id, event.target.value)}
-                            onBlur={onBlur}
+                            html={block.bodyHtml}
+                            annotations={annotationsByBlock.get(block.id) ?? []}
+                            annotationStateById={annotationStateById}
+                            className="block-editor rich-editor"
                             aria-label={`${displayHeading} draft text`}
                             placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${displayHeading.toLowerCase()} here…`}
+                            onRegister={registerEditor}
+                            onChange={handleBodyChange}
+                            onBlur={onBlur}
+                            onAnnotationPreview={previewAnnotation}
+                            onAnnotationLeave={hideAnnotationSoon}
                           />
-                          <div className="editor-footer"><span>B</span><span><em>I</em></span><span><u>U</u></span><i /> <small>{words} words</small></div>
                         </div>
+                        <EditorToolbar className="block-editor-toolbar" wordLabel={`${words} words`} onCommand={runEditorCommand}>
+                          <button
+                            className="block-toolbar-action"
+                            type="button"
+                            aria-pressed={expanded}
+                            onClick={() => setExpandedBlockIds((current) => {
+                              const next = new Set(current);
+                              if (next.has(block.id)) next.delete(block.id);
+                              else next.add(block.id);
+                              return next;
+                            })}
+                          >{expanded ? "Natural height" : "Enlarge"}</button>
+                          <button className="block-toolbar-action remove" type="button" disabled={blocks.length === 1} title={blocks.length === 1 ? "Keep at least one block" : "Remove this block"} onClick={() => onRemove(block.id)}>Remove</button>
+                        </EditorToolbar>
                       </article>
                       <PlusButton label={`Add a block below ${displayHeading}`} onClick={() => onInsert(block.id, "after")} />
                     </div>
@@ -1111,7 +1402,7 @@ function Workspace({
                 <span>{assignment.courseCode} · {assignment.type.toUpperCase()}</span>
                 <h1>{assignment.title}</h1>
               </div>
-              <div className="draft-toolbar"><span>B</span><span><em>I</em></span><span><u>U</u></span><i /><small>{totalWords} words</small></div>
+              <EditorToolbar className="draft-toolbar" wordLabel={`${totalWords} words`} onCommand={runEditorCommand} />
               <div className="draft-sections">
                 {blocks.map((block) => (
                   <section key={block.id}>
@@ -1125,18 +1416,26 @@ function Workspace({
                         onKeyDown={(event) => {
                           if (event.key !== "Enter") return;
                           event.preventDefault();
-                          event.currentTarget.parentElement?.querySelector("textarea")?.focus();
+                          event.currentTarget.parentElement?.querySelector<HTMLElement>("[data-rich-editor]")?.focus();
                         }}
                         aria-label="Section heading"
                         placeholder="Write the first sentence — this becomes the section heading"
                       />
                     ) : <h2>{block.heading}</h2>}
-                    <textarea
+                    <RichTextBody
+                      blockId={block.id}
                       value={block.body}
-                      onChange={(event) => onBody(block.id, event.target.value)}
-                      onBlur={onBlur}
+                      html={block.bodyHtml}
+                      annotations={annotationsByBlock.get(block.id) ?? []}
+                      annotationStateById={annotationStateById}
+                      className="draft-rich-editor rich-editor"
                       aria-label={`${block.heading.trim() || "This block"} draft text`}
                       placeholder={block.headingSource === "student" ? "Continue writing underneath…" : `Write your ${block.heading.toLowerCase()} here…`}
+                      onRegister={registerEditor}
+                      onChange={handleBodyChange}
+                      onBlur={onBlur}
+                      onAnnotationPreview={previewAnnotation}
+                      onAnnotationLeave={hideAnnotationSoon}
                     />
                   </section>
                 ))}
@@ -1145,6 +1444,39 @@ function Workspace({
           )}
         </div>
       </main>
+      {coachNote && coachAnnotation ? (
+        <div
+          className="coach-note"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="coach-note-title"
+          ref={coachRef}
+          tabIndex={-1}
+          style={{ left: coachNote.left, top: coachNote.top, maxHeight: coachNote.maxHeight }}
+          onMouseEnter={() => {
+            if (coachHideTimer.current) clearTimeout(coachHideTimer.current);
+          }}
+          onMouseLeave={hideAnnotationSoon}
+        >
+          <div className="coach-note-heading">
+            <span className={`coach-severity annotation-${coachAnnotation.severity}`}>{coachAnnotation.severity === "high" ? "priority" : coachAnnotation.severity === "med" ? "worth a look" : "polish"}</span>
+            <strong id="coach-note-title">{coachAnnotation.title}</strong>
+            <button type="button" aria-label="Close note" onClick={closeCoach}>×</button>
+          </div>
+          <p>{coachAnnotation.what}</p>
+          <div className="coach-improvement"><strong>HOW TO IMPROVE IT</strong><span>{coachAnnotation.how}</span></div>
+          <div className="coach-note-actions">
+            <span>{coachCriterion?.name ?? "Rubric"}{coachCriterion ? ` · ${coachCriterion.weight}%` : ""}</span>
+            <button type="button" onClick={() => {
+              onAnnotationResolved(coachAnnotation.id);
+              setCoachNote(null);
+              showToast("Noted. Marked as addressed.");
+            }}>Mark addressed</button>
+          </div>
+          <em>Nothing is rewritten for you. What changes is your call.</em>
+        </div>
+      ) : null}
+      {toast ? <div className="workspace-toast" role="status">{toast}</div> : null}
     </div>
   );
 }
@@ -1161,6 +1493,8 @@ function WorkspaceApp() {
   const [view, setView] = useState<ViewMode>("guide");
   const [analysis, setAnalysis] = useState<AnalysisState>("idle");
   const [analysisResult, setAnalysisResult] = useState<DraftAnalysis | null>(null);
+  const [analysisStale, setAnalysisStale] = useState(false);
+  const [annotationStateById, setAnnotationStateById] = useState<Record<string, AnnotationState>>({});
   const [analysisError, setAnalysisError] = useState("");
   const [isReading, setIsReading] = useState(false);
   const [isStructuring, setIsStructuring] = useState(false);
@@ -1211,7 +1545,9 @@ function WorkspaceApp() {
     setBlocks(record.blocks);
     setView(record.view);
     setAnalysis(record.analysisResult ? "complete" : "idle");
-    setAnalysisResult(record.analysisResult);
+    setAnalysisResult(record.analysisResult ? { ...record.analysisResult, annotations: record.analysisResult.annotations ?? [] } : null);
+    setAnalysisStale(record.analysisStale ?? false);
+    setAnnotationStateById(record.annotationStateById ?? {});
     setAnalysisError("");
     setImportError("");
     setStructureError("");
@@ -1260,8 +1596,10 @@ function WorkspaceApp() {
       blocks,
       view,
       analysisResult,
+      analysisStale,
+      annotationStateById,
     };
-  }, [activeAssignmentId, analysisResult, assignment, blocks, choice, draftText, files, pastedText, stage, structurePlan, view]);
+  }, [activeAssignmentId, analysisResult, analysisStale, annotationStateById, assignment, blocks, choice, draftText, files, pastedText, stage, structurePlan, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1514,6 +1852,10 @@ function WorkspaceApp() {
       setBlocks(nextBlocks);
       setStage("workspace");
       setView("guide");
+      setAnalysis("idle");
+      setAnalysisResult(null);
+      setAnalysisStale(false);
+      setAnnotationStateById({});
     } catch (error) {
       if (originId === activeAssignmentIdRef.current
         && originEpoch === assignmentEpoch.current
@@ -1534,11 +1876,15 @@ function WorkspaceApp() {
     setStage("review");
   };
 
-  const updateBody = (blockId: string, value: string) => {
+  const updateBody = (blockId: string, value: string, bodyHtml: string) => {
     documentRevision.current += 1;
-    setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, body: value } : block));
-    setAnalysis("idle");
-    setAnalysisResult(null);
+    setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, body: value, bodyHtml } : block));
+    if (analysisResult) {
+      setAnalysis("complete");
+      setAnalysisStale(true);
+    } else {
+      setAnalysis("idle");
+    }
     setAnalysisError("");
     setSaveLabel("Saving locally…");
   };
@@ -1546,8 +1892,12 @@ function WorkspaceApp() {
   const updateHeading = (blockId: string, value: string) => {
     documentRevision.current += 1;
     setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, heading: value } : block));
-    setAnalysis("idle");
-    setAnalysisResult(null);
+    if (analysisResult) {
+      setAnalysis("complete");
+      setAnalysisStale(true);
+    } else {
+      setAnalysis("idle");
+    }
     setAnalysisError("");
     setSaveLabel("Saving locally…");
   };
@@ -1564,12 +1914,49 @@ function WorkspaceApp() {
       next.splice(position === "before" ? index : index + 1, 0, newBlock);
       return next;
     });
-    setAnalysis("idle");
-    setAnalysisResult(null);
+    if (analysisResult) {
+      setAnalysis("complete");
+      setAnalysisStale(true);
+    } else {
+      setAnalysis("idle");
+    }
     setAnalysisError("");
     setSaveLabel("Saving locally…");
     setFocusHeadingId(newBlockId);
   };
+
+  const removeBlock = (blockId: string) => {
+    if (blocks.length <= 1) return;
+    const block = blocks.find((candidate) => candidate.id === blockId);
+    if (!block) return;
+    if ((block.heading.trim() || block.body.trim()) && !window.confirm(`Remove ${block.heading.trim() || "this block"}? Its writing will be removed from this browser workspace.`)) return;
+    documentRevision.current += 1;
+    setBlocks((current) => current.filter((candidate) => candidate.id !== blockId));
+    if (analysisResult) {
+      setAnalysis("complete");
+      setAnalysisStale(true);
+    } else {
+      setAnalysis("idle");
+    }
+    setAnalysisError("");
+    setSaveLabel("Saving locally…");
+    setFocusHeadingId(null);
+  };
+
+  const markAnnotationsEdited = useCallback((annotationIds: string[]) => {
+    if (!annotationIds.length) return;
+    setAnnotationStateById((current) => {
+      const next = { ...current };
+      for (const annotationId of annotationIds) {
+        if (next[annotationId] !== "resolved") next[annotationId] = "edited";
+      }
+      return next;
+    });
+  }, []);
+
+  const resolveAnnotation = useCallback((annotationId: string) => {
+    setAnnotationStateById((current) => ({ ...current, [annotationId]: "resolved" }));
+  }, []);
 
   const refreshGuidance = async () => {
     const locallyAllocated = reallocateGuidance(blocks, assignment.requirements);
@@ -1584,7 +1971,7 @@ function WorkspaceApp() {
     try {
       const result = await requestAi<{ allocations: Array<{ blockId: string; guidanceIds: string[] }> }>("allocate", {
         requirements: assignment.requirements,
-        blocks: locallyAllocated,
+        blocks: locallyAllocated.map(({ id, heading, body, guidanceIds }) => ({ id, heading, body, guidanceIds })),
         plannedBlocks: structurePlan,
       });
       if (requestId !== guidanceRequest.current || originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) return;
@@ -1613,13 +2000,18 @@ function WorkspaceApp() {
     setAnalysis("running");
     setAnalysisError("");
     try {
-      const result = await requestAi<DraftAnalysis>("analyse", { assignment, blocks });
+      const result = await requestAi<DraftAnalysis>("analyse", {
+        assignment,
+        blocks: blocks.map(({ id, heading, body, guidanceIds }) => ({ id, heading, body, guidanceIds })),
+      });
       if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) {
         if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");
         return;
       }
       setAnalysisResult(result);
       setAnalysis("complete");
+      setAnalysisStale(false);
+      setAnnotationStateById({});
     } catch (error) {
       if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originDocumentRevision === documentRevision.current) {
         setAnalysis("idle");
@@ -1672,20 +2064,27 @@ function WorkspaceApp() {
   }
   return (
     <Workspace
+      key={activeAssignmentId}
       assignment={assignment}
       assignmentMenu={assignmentMenu}
       blocks={blocks}
       view={view}
       analysis={analysis}
       analysisResult={analysisResult}
+      analysisStale={analysisStale}
       analysisError={analysisError}
+      annotationStateById={annotationStateById}
       focusHeadingId={focusHeadingId}
       onView={setView}
       onHeading={updateHeading}
       onBody={updateBody}
       onBlur={refreshGuidance}
       onInsert={insertBlock}
+      onRemove={removeBlock}
       onAnalyse={analyse}
+      onAnnotationsEdited={markAnnotationsEdited}
+      onAnnotationResolved={resolveAnnotation}
+      onAnnotationsRechecked={setAnnotationStateById}
       saveLabel={saveLabel}
     />
   );
