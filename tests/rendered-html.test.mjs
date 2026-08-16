@@ -173,6 +173,9 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
   assert.doesNotMatch(page, /AI_GATEWAY_API_KEY/);
   assert.match(page, /function AssignmentSwitcher/);
   assert.match(page, /Create new assignment/);
+  assert.match(page, /const deleteAssignment = useCallback/);
+  assert.match(page, /Delete \$\{item\.title\}/);
+  assert.match(page, /onDelete: deleteAssignment/);
   assert.match(page, /Saved on this browser/);
   assert.match(page, /CachedAppState/);
   assert.match(page, /version: 1/);
@@ -200,11 +203,14 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
   assert.match(page, /guide-bigger-picture/);
   assert.match(page, /Review this block/);
   assert.match(page, /"analyse-block"/);
+  assert.match(page, /const runFullDraftAnalysis = async/);
+  assert.match(page, /if \(startingDraft\.trim\(\)\) void runFullDraftAnalysis\(nextBlocks, true\)/);
+  assert.match(page, /automatic rubric reading did not finish/);
   assert.match(page, /scheduleGuidanceRefresh/);
   assert.match(page, /}, 2200\);/);
   assert.match(page, /revealAnnotation\(annotation\.id\)/);
   assert.match(page, /select a finding to jump to its highlighted text/);
-  assert.match(page, /check\.met \? "✓" : "·"/);
+  assert.match(page, /check\.met \? "✓" : ""/);
   assert.match(page, /check\.met \? "Met: " : "Not yet met: "/);
   assert.match(page, /See \$\{annotationCount\} highlight/);
   assert.doesNotMatch(page, /activeCriterion\.weight/);
@@ -213,7 +219,7 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
   assert.match(page, /Nothing is rewritten for you\. What changes is your call\./);
   assert.match(page, /onRemove=\{removeBlock\}/);
   assert.match(page, /Natural height/);
-  assert.match(page, />Remove</);
+  assert.match(page, />Delete block</);
   assert.match(page, /assignmentMenu=/);
   assert.match(page, /function InviteBoundary/);
   assert.match(page, /Enter your invite code\./);
@@ -233,6 +239,9 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
   assert.match(browserCache, /quarantineUnreadableBrowserCache/);
   assert.match(browserCache, /readBrowserCache/);
   assert.match(browserCache, /writeBrowserCache/);
+  assert.match(browserCache, /retainedMaterialIds/);
+  assert.match(browserCache, /await cache\.keys\(\)/);
+  assert.match(browserCache, /await cache\.delete\(request\)/);
   assert.equal(JSON.parse(hostingConfig).d1, null);
 
   assert.match(aiRoute, /generateText/);
@@ -331,8 +340,9 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
   assert.match(css, /\.block-finding/);
   assert.match(css, /\.coach-note/);
   assert.match(css, /\.criterion-focus-bar/);
-  assert.match(css, /\.guidance-list \{ list-style: none; display: grid;/);
-  assert.match(css, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.guidance-list \{ list-style: none; display: grid; grid-template-columns: 1fr;/);
+  assert.match(css, /\.assignment-menu-delete/);
+  assert.doesNotMatch(css, /\.block-editor-toolbar[^}]*opacity:\s*0/);
   assert.doesNotMatch(css, /prefers-color-scheme:\s*dark/);
   assert.match(layout, /lang="en-AU"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
