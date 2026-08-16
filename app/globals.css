@@ -401,10 +401,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .review-list > div { display: flex; gap: 10px; align-items: flex-start; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .review-list i { flex: none; width: 7px; height: 7px; margin-top: 7px; border-radius: 50%; background: var(--accent); }
 .rubric-review { align-self: start; }
-.criterion-line { display: flex; justify-content: space-between; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.criterion-line { display: flex; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .criterion-line:last-child { border-bottom: 0; }
 .criterion-line span { color: var(--muted); }
-.criterion-line strong { color: var(--accent-3); font: 700 12px Plus Jakarta Sans, sans-serif; }
 
 .choice-main { max-width: 850px; width: min(850px, calc(100% - 40px)); }
 .draft-start-card { margin-bottom: 16px; }
@@ -470,7 +469,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .criterion-card.priority { border-left-color: var(--priority); }
 .criterion-card > div { display: flex; justify-content: space-between; gap: 10px; }
 .criterion-card > div strong { font: 600 13px Plus Jakarta Sans, sans-serif; }
-.criterion-card > div span { color: var(--muted-2); font: 600 12px Plus Jakarta Sans, sans-serif; }
 .criterion-card p { min-height: 44px; margin: 8px 0 11px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .criterion-card .criterion-action { min-height: 0; margin: 0 0 11px; padding-top: 9px; border-top: 1px solid var(--line-4); color: var(--text-2); }
 .criterion-action strong { font-weight: 600; }
@@ -482,19 +480,30 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .writing-block.attention { --block-tone: color-mix(in srgb, var(--attention) 52%, var(--line)); }
 .writing-block.good { --block-tone: color-mix(in srgb, var(--good) 52%, var(--line)); }
 .block-guide { padding: 14px 18px 13px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, rgba(109, 90, 224, 0.055), transparent); }
-.block-guide-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.block-guide-top { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
 .violet-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-.guide-title { color: var(--accent-2); font: 700 12px Plus Jakarta Sans, sans-serif; letter-spacing: 0.06em; }
-.guide-count { margin-left: auto; color: var(--muted-3); font: 400 12px Plus Jakarta Sans, sans-serif; }
-.block-status { padding: 2px 9px; background: color-mix(in srgb, var(--block-tone) 15%, transparent); color: var(--muted-2); }
+.guide-title { min-width: 0; color: var(--accent-2); overflow-wrap: anywhere; font: 700 12px/1.45 Plus Jakarta Sans, sans-serif; letter-spacing: 0.06em; }
+.guide-count { color: var(--muted-3); white-space: nowrap; font: 400 12px Plus Jakarta Sans, sans-serif; }
+.block-status { padding: 2px 9px; background: color-mix(in srgb, var(--block-tone) 15%, transparent); color: var(--muted-2); white-space: nowrap; }
 .writing-block.priority .block-status { color: var(--priority); }
 .writing-block.attention .block-status { color: var(--attention); }
 .writing-block.good .block-status { color: var(--good); }
 .block-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.block-guide > p { margin: 10px 0 0; color: var(--text-2); font: italic 500 14px/1.6 Fraunces, serif; }
-.guidance-list { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 10px; }
-.guidance-list > span { max-width: 48%; display: inline-flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-.guidance-list > span > i { width: 15px; height: 15px; flex: none; display: inline-grid; place-items: center; margin-top: 1px; border: 1px solid var(--line-5); border-radius: 50%; color: var(--muted-3); font: 700 11px/1 Plus Jakarta Sans, sans-serif; }
+.block-guide-content { display: grid; gap: 9px; margin-top: 11px; }
+.guide-encouragement { margin: 0; color: var(--text-2); text-wrap: pretty; font: italic 500 14px/1.6 Fraunces, serif; }
+.guide-next-row { display: flex; align-items: flex-start; gap: 12px; }
+.guide-next-step { min-width: 0; flex: 1; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--accent) 5%, var(--card)); }
+.guide-next-step strong { color: var(--accent-3); font: 700 10px Plus Jakarta Sans, sans-serif; letter-spacing: 0.08em; }
+.guide-next-step span { color: var(--text-3); text-wrap: pretty; font: 500 13px/1.55 Inter, sans-serif; }
+.block-review-button { flex: none; padding: 8px 11px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 8px; background: var(--card); color: var(--accent-3); cursor: pointer; white-space: nowrap; font: 600 11px Plus Jakarta Sans, sans-serif; }
+.block-review-button:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--card)); }
+.block-review-button:disabled { cursor: not-allowed; opacity: 0.56; }
+.guide-bigger-picture { margin: 0; color: var(--muted); text-wrap: pretty; font: 400 12px/1.55 Inter, sans-serif; }
+.guide-bigger-picture strong { color: var(--text-3); font-weight: 600; }
+.block-review-error { margin: 0; color: var(--priority); font: 500 12px/1.5 Inter, sans-serif; }
+.guidance-list { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin: 11px 0 0; padding: 0; }
+.guidance-list > li { min-width: 0; display: grid; grid-template-columns: 15px minmax(0, 1fr); align-items: start; gap: 7px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.guidance-list > li > i { width: 15px; height: 15px; display: inline-grid; place-items: center; margin-top: 1px; border: 1px solid var(--line-5); border-radius: 50%; color: var(--muted-3); font: 700 11px/1 Plus Jakarta Sans, sans-serif; }
 .guidance-list > .met { color: var(--good); }
 .guidance-list > .met > i { border-color: transparent; color: var(--good); }
 .guidance-list > .unmet > i { color: var(--attention); }
@@ -554,7 +563,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .editor-toolbar-spacer { min-width: 8px; flex: 1; }
 .editor-word-count { flex: none; margin-left: 8px; color: var(--muted-2); white-space: nowrap; font-weight: 400; }
 .block-editor-toolbar { min-height: 49px; padding: 8px 16px 10px; border-top: 1px solid var(--line-2); background: var(--line-4); opacity: 0; transition: opacity 150ms; }
-.writing-block:hover .block-editor-toolbar, .writing-block:focus-within .block-editor-toolbar { opacity: 1; }
+.writing-block:hover .block-editor-toolbar, .block-editor-wrap:focus-within + .block-editor-toolbar, .block-editor-toolbar:focus-within { opacity: 1; }
 .block-toolbar-action { flex: none; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); cursor: pointer; white-space: nowrap; font: 600 12px Plus Jakarta Sans, sans-serif; }
 .block-toolbar-action:hover { background: var(--card); color: var(--accent-3); }
 .block-toolbar-action.remove:hover { color: var(--priority); }
@@ -656,7 +665,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   .assignment-switcher-trigger { max-width: min(46vw, 210px); }
   .assignment-menu { position: fixed; top: 64px; right: 12px; left: 12px; width: auto; }
   .export-button { padding-inline: 11px; }
-  .guidance-list > span { max-width: 100%; }
+  .block-guide-top { grid-template-columns: 8px minmax(0, 1fr) auto; }
+  .block-status { grid-column: 2 / -1; justify-self: start; }
+  .guide-next-row { align-items: stretch; flex-direction: column; }
+  .block-review-button { align-self: flex-start; }
+  .guidance-list { grid-template-columns: 1fr; }
   .draft-heading, .draft-sections { padding-inline: 22px; }
   .draft-toolbar { padding-inline: 22px; }
   .criterion-focus-bar > div { padding-inline: 12px; gap: 8px 10px; }
