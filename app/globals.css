@@ -142,10 +142,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   scrollbar-width: thin;
   scrollbar-color: var(--line-3) transparent;
 }
+.assignment-menu-row {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  border-radius: 9px;
+  color: var(--text);
+}
+.assignment-menu-row:hover { background: var(--raise); }
 .assignment-menu-item {
   position: relative;
-  width: 100%;
   min-width: 0;
+  flex: 1;
   padding: 9px 10px;
   display: flex;
   align-items: center;
@@ -157,7 +165,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   cursor: pointer;
   text-align: left;
 }
-.assignment-menu-item:hover { background: var(--raise); }
+.assignment-menu-item:hover { background: transparent; }
 .assignment-menu-item-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
 .assignment-menu-item-copy strong { overflow: hidden; color: inherit; font: 600 13px Plus Jakarta Sans, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
 .assignment-menu-item-copy span { overflow: hidden; color: var(--muted-2); font: 400 11px Plus Jakarta Sans, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
@@ -165,6 +173,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .assignment-menu-active:hover { background: rgba(109, 90, 224, 0.13); }
 .assignment-menu-active .assignment-menu-item-copy span { color: var(--accent-2); }
 .assignment-menu-current { flex: none; color: var(--accent-3); font: 600 10px Plus Jakarta Sans, sans-serif; text-transform: uppercase; letter-spacing: 0.05em; }
+.assignment-menu-delete {
+  width: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-3);
+  cursor: pointer;
+}
+.assignment-menu-delete:hover, .assignment-menu-delete:focus-visible { background: color-mix(in srgb, var(--priority) 9%, var(--card)); color: var(--priority); }
+.assignment-menu-delete svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
 .assignment-menu-create {
   width: 100%;
   padding: 11px 14px;
@@ -501,12 +523,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .guide-bigger-picture { margin: 0; color: var(--muted); text-wrap: pretty; font: 400 12px/1.55 Inter, sans-serif; }
 .guide-bigger-picture strong { color: var(--text-3); font-weight: 600; }
 .block-review-error { margin: 0; color: var(--priority); font: 500 12px/1.5 Inter, sans-serif; }
-.guidance-list { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin: 11px 0 0; padding: 0; }
+.guidance-list { list-style: none; display: grid; grid-template-columns: 1fr; gap: 8px; margin: 12px 0 0; padding: 11px 0 0; border-top: 1px solid var(--line-4); }
 .guidance-list > li { min-width: 0; display: grid; grid-template-columns: 15px minmax(0, 1fr); align-items: start; gap: 7px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .guidance-list > li > i { width: 15px; height: 15px; display: inline-grid; place-items: center; margin-top: 1px; border: 1px solid var(--line-5); border-radius: 50%; color: var(--muted-3); font: 700 11px/1 Plus Jakarta Sans, sans-serif; }
 .guidance-list > .met { color: var(--good); }
 .guidance-list > .met > i { border-color: transparent; color: var(--good); }
-.guidance-list > .unmet > i { color: var(--attention); }
+.guidance-list > .unmet > i { border-color: var(--line-5); color: transparent; }
 .block-analysis { padding: 15px 18px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--raise) 52%, var(--card)); }
 .block-analysis-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; color: var(--muted-3); font-size: 12px; line-height: 1.45; }
 .block-analysis-meta > i { width: 8px; height: 8px; flex: none; margin-right: 3px; border-radius: 50%; background: var(--muted-3); }
@@ -562,8 +584,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .editor-tool-underline { font: 500 14px Plus Jakarta Sans, sans-serif; text-decoration: underline; }
 .editor-toolbar-spacer { min-width: 8px; flex: 1; }
 .editor-word-count { flex: none; margin-left: 8px; color: var(--muted-2); white-space: nowrap; font-weight: 400; }
-.block-editor-toolbar { min-height: 49px; padding: 8px 16px 10px; border-top: 1px solid var(--line-2); background: var(--line-4); opacity: 0; transition: opacity 150ms; }
-.writing-block:hover .block-editor-toolbar, .block-editor-wrap:focus-within + .block-editor-toolbar, .block-editor-toolbar:focus-within { opacity: 1; }
+.block-editor-toolbar { min-height: 49px; padding: 8px 16px 10px; border-top: 1px solid var(--line-2); background: var(--line-4); }
 .block-toolbar-action { flex: none; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); cursor: pointer; white-space: nowrap; font: 600 12px Plus Jakarta Sans, sans-serif; }
 .block-toolbar-action:hover { background: var(--card); color: var(--accent-3); }
 .block-toolbar-action.remove:hover { color: var(--priority); }

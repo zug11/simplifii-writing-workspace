@@ -193,12 +193,20 @@ export async function writeBrowserCache(prepared: PreparedBrowserCache): Promise
   if ("caches" in window) {
     try {
       const cache = await window.caches.open(CACHE_NAME);
+      const retainedMaterialIds = new Set(prepared.materials.map((material) => material.id));
       await Promise.all(prepared.materials.map(async (material) => {
         const request = materialRequest(material.id);
         if (await cache.match(request)) return;
         await cache.put(request, new Response(material.dataUrl, {
           headers: { "content-type": "text/plain; charset=utf-8" },
         }));
+      }));
+      const cachedRequests = await cache.keys();
+      await Promise.all(cachedRequests.map(async (request) => {
+        const pathname = new URL(request.url).pathname;
+        if (!pathname.startsWith(MATERIAL_PATH)) return;
+        const materialId = decodeURIComponent(pathname.slice(MATERIAL_PATH.length));
+        if (!retainedMaterialIds.has(materialId)) await cache.delete(request);
       }));
       const envelope: CacheEnvelope = { version: 1, writtenAt: prepared.writtenAt, value: prepared.snapshot };
       await cache.put(cacheRequest(SNAPSHOT_PATH), new Response(JSON.stringify(envelope), {

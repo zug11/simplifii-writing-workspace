@@ -149,6 +149,7 @@ type AssignmentMenuProps = {
   assignments: Array<{ id: string; title: string; updatedAt: number }>;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onDelete: (id: string) => boolean;
 };
 
 const RESEARCH_REQUIREMENTS: Requirement[] = [
@@ -661,7 +662,7 @@ function InviteBoundary() {
   return <WorkspaceApp />;
 }
 
-function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignments, onSelect, onCreate }: AssignmentMenuProps) {
+function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignments, onSelect, onCreate, onDelete }: AssignmentMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -710,19 +711,33 @@ function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignm
           <span className="assignment-menu-heading">Assignments</span>
           <div className="assignment-menu-list">
             {assignments.map((item) => (
-              <button
-                className={`assignment-menu-item${item.id === activeId ? " assignment-menu-active" : ""}`}
-                type="button"
-                aria-current={item.id === activeId ? "page" : undefined}
-                key={item.id}
-                onClick={() => {
-                  setOpen(false);
-                  if (item.id !== activeId) onSelect(item.id);
-                }}
-              >
-                <span className="assignment-menu-item-copy"><strong>{item.title}</strong></span>
-                {item.id === activeId ? <span className="assignment-menu-current">Current</span> : null}
-              </button>
+              <div className={`assignment-menu-row${item.id === activeId ? " assignment-menu-active" : ""}`} key={item.id}>
+                <button
+                  className="assignment-menu-item"
+                  type="button"
+                  aria-current={item.id === activeId ? "page" : undefined}
+                  onClick={() => {
+                    setOpen(false);
+                    if (item.id !== activeId) onSelect(item.id);
+                  }}
+                >
+                  <span className="assignment-menu-item-copy"><strong>{item.title}</strong></span>
+                  {item.id === activeId ? <span className="assignment-menu-current">Current</span> : null}
+                </button>
+                <button
+                  className="assignment-menu-delete"
+                  type="button"
+                  aria-label={`Delete ${item.title}`}
+                  title={`Delete ${item.title}`}
+                  onClick={() => {
+                    if (!onDelete(item.id)) return;
+                    setOpen(false);
+                    window.requestAnimationFrame(() => triggerRef.current?.focus());
+                  }}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 4.5h9M6 4.5V3.2h4v1.3m-5.4 0 .6 8.2h5.6l.6-8.2M6.8 6.6v4.1m2.4-4.1v4.1" /></svg>
+                </button>
+              </div>
             ))}
           </div>
           <button
@@ -1504,7 +1519,7 @@ function Workspace({
                           <ul className="guidance-list" aria-label={`${displayHeading} checklist`}>
                             {checks.map((check, checkIndex) => (
                               <li className={check.met ? "met" : "unmet"} key={`${block.id}-check-${checkIndex}`}>
-                                <i aria-hidden="true">{check.met ? "✓" : "·"}</i>
+                                <i aria-hidden="true">{check.met ? "✓" : ""}</i>
                                 <span><span className="visually-hidden">{check.met ? "Met: " : "Not yet met: "}</span>{check.text}</span>
                               </li>
                             ))}
@@ -1593,7 +1608,7 @@ function Workspace({
                               return next;
                             })}
                           >{expanded ? "Natural height" : "Enlarge"}</button>
-                          <button className="block-toolbar-action remove" type="button" disabled={blocks.length === 1} title={blocks.length === 1 ? "Keep at least one block" : "Remove this block"} onClick={() => onRemove(block.id)}>Remove</button>
+                          <button className="block-toolbar-action remove" type="button" aria-label={`Delete ${displayHeading}`} title="Delete this block" onClick={() => onRemove(block.id)}>Delete block</button>
                         </EditorToolbar>
                       </article>
                       <PlusButton label={`Add a block below ${displayHeading}`} onClick={() => onInsert(block.id, "after")} />
@@ -1906,6 +1921,31 @@ function WorkspaceApp() {
     stageCacheWrite({ version: 1, activeAssignmentId: blank.id, assignments: nextCatalog }, true);
   }, [captureCurrentRecord, restoreAssignment, stageCacheWrite]);
 
+  const deleteAssignment = useCallback((id: string) => {
+    const record = catalogRef.current.find((item) => item.id === id);
+    if (!record) return false;
+    const title = record.stage === "import" ? "this new assignment" : record.assignment.title.trim() || "this assignment";
+    if (!window.confirm(`Delete ${title}? Its files, draft and feedback will be removed from this browser.`)) return false;
+
+    if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+    const deletingActive = id === activeAssignmentIdRef.current;
+    const currentRecord = deletingActive ? null : captureCurrentRecord();
+    const savedCatalog = currentRecord ? upsertCachedAssignment(catalogRef.current, currentRecord) : catalogRef.current;
+    const remaining = savedCatalog.filter((item) => item.id !== id);
+    const nextCatalog = remaining.length ? remaining : [blankCachedAssignment()];
+    const nextActive = deletingActive
+      ? nextCatalog[0]
+      : nextCatalog.find((item) => item.id === activeAssignmentIdRef.current) ?? nextCatalog[0];
+
+    catalogRef.current = nextCatalog;
+    activeAssignmentIdRef.current = nextActive.id;
+    setAssignmentCatalog(nextCatalog);
+    setActiveAssignmentId(nextActive.id);
+    if (deletingActive) restoreAssignment(nextActive);
+    stageCacheWrite({ version: 1, activeAssignmentId: nextActive.id, assignments: nextCatalog }, true);
+    return true;
+  }, [captureCurrentRecord, restoreAssignment, stageCacheWrite]);
+
   const addFiles = async (incoming: File[]) => {
     const originId = activeAssignmentIdRef.current;
     const originEpoch = assignmentEpoch.current;
@@ -1992,6 +2032,41 @@ function WorkspaceApp() {
       }
     } finally {
       if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setIsReading(false);
+    }
+  };
+
+  const runFullDraftAnalysis = async (sourceBlocks: WritingBlock[], automatic = false) => {
+    if (sourceBlocks.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) {
+      if (!automatic) setAnalysisError("Write a little more before asking Simplifii to analyse the draft.");
+      return;
+    }
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originDocumentRevision = documentRevision.current;
+    setAnalysingBlockId(null);
+    setAnalysis("running");
+    setAnalysisError("");
+    try {
+      const result = await requestAi<DraftAnalysis>("analyse", {
+        assignment,
+        blocks: sourceBlocks.map(({ id, heading, headingSource, body, guidanceIds }) => ({ id, heading, headingSource, body, guidanceIds })),
+      });
+      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) {
+        if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");
+        return;
+      }
+      setAnalysisResult({ ...result, overallComplete: true });
+      setAnalysis("complete");
+      setAnalysisStale(false);
+      setAnnotationStateById({});
+      setSaveLabel("Saving locally…");
+    } catch (error) {
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originDocumentRevision === documentRevision.current) {
+        setAnalysis("idle");
+        setAnalysisError(automatic
+          ? "Your draft is in place, but the automatic rubric reading did not finish. Choose Analyse my draft to try again."
+          : error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
+      }
     }
   };
 
@@ -2102,6 +2177,7 @@ function WorkspaceApp() {
       setAnalysisResult(null);
       setAnalysisStale(false);
       setAnnotationStateById({});
+      if (startingDraft.trim()) void runFullDraftAnalysis(nextBlocks, true);
     } catch (error) {
       if (originId === activeAssignmentIdRef.current
         && originEpoch === assignmentEpoch.current
@@ -2185,13 +2261,16 @@ function WorkspaceApp() {
   };
 
   const removeBlock = (blockId: string) => {
-    if (blocks.length <= 1) return;
     const block = blocks.find((candidate) => candidate.id === blockId);
     if (!block) return;
-    if ((block.heading.trim() || block.body.trim()) && !window.confirm(`Remove ${block.heading.trim() || "this block"}? Its writing will be removed from this browser workspace.`)) return;
+    if ((block.heading.trim() || block.body.trim()) && !window.confirm(`Delete ${block.heading.trim() || "this block"}? Its writing will be removed from this browser workspace.`)) return;
+    const replacementBlock = blocks.length === 1
+      ? { id: uid("block"), heading: "", headingSource: "student" as const, body: "", guidanceIds: [...block.guidanceIds] }
+      : null;
     documentRevision.current += 1;
     setBlocks((current) => {
-      const next = current.filter((candidate) => candidate.id !== blockId);
+      const remaining = current.filter((candidate) => candidate.id !== blockId);
+      const next = remaining.length ? remaining : replacementBlock ? [replacementBlock] : remaining;
       latestBlocksRef.current = next;
       return next;
     });
@@ -2203,7 +2282,7 @@ function WorkspaceApp() {
     }
     setAnalysisError("");
     setSaveLabel("Saving locally…");
-    setFocusHeadingId(null);
+    setFocusHeadingId(replacementBlock?.id ?? null);
     scheduleGuidanceRefresh();
   };
 
@@ -2267,36 +2346,8 @@ function WorkspaceApp() {
     }
   }
 
-  const analyse = async () => {
-    if (blocks.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) {
-      setAnalysisError("Write a little more before asking Simplifii to analyse the draft.");
-      return;
-    }
-    const originId = activeAssignmentIdRef.current;
-    const originEpoch = assignmentEpoch.current;
-    const originDocumentRevision = documentRevision.current;
-    setAnalysingBlockId(null);
-    setAnalysis("running");
-    setAnalysisError("");
-    try {
-      const result = await requestAi<DraftAnalysis>("analyse", {
-        assignment,
-        blocks: blocks.map(({ id, heading, headingSource, body, guidanceIds }) => ({ id, heading, headingSource, body, guidanceIds })),
-      });
-      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) {
-        if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");
-        return;
-      }
-      setAnalysisResult({ ...result, overallComplete: true });
-      setAnalysis("complete");
-      setAnalysisStale(false);
-      setAnnotationStateById({});
-    } catch (error) {
-      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originDocumentRevision === documentRevision.current) {
-        setAnalysis("idle");
-        setAnalysisError(error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
-      }
-    }
+  const analyse = () => {
+    void runFullDraftAnalysis(latestBlocksRef.current);
   };
 
   const analyseBlock = async (blockId: string) => {
@@ -2373,7 +2424,8 @@ function WorkspaceApp() {
       })),
     onSelect: switchAssignment,
     onCreate: createNewAssignment,
-  }), [activeAssignmentId, assignment.title, assignmentCatalog, cacheReady, createNewAssignment, saveLabel, stage, switchAssignment]);
+    onDelete: deleteAssignment,
+  }), [activeAssignmentId, assignment.title, assignmentCatalog, cacheReady, createNewAssignment, deleteAssignment, saveLabel, stage, switchAssignment]);
 
   if (cacheBlocked) return <CacheRecoveryScreen />;
 
