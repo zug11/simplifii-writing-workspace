@@ -64,6 +64,12 @@ type Assignment = {
   criteria: Criterion[];
 };
 
+type ResponsiveBlockGuide = {
+  encouragement: string;
+  nextStep: string;
+  biggerPicture: string;
+};
+
 type WritingBlock = {
   id: string;
   heading: string;
@@ -71,6 +77,7 @@ type WritingBlock = {
   body: string;
   bodyHtml?: string;
   guidanceIds: string[];
+  guide?: ResponsiveBlockGuide;
 };
 
 type StructurePlanBlock = {
@@ -84,6 +91,7 @@ type AiExtraction = Omit<Assignment, "requirements" | "criteria"> & {
 };
 
 type DraftAnalysis = {
+  overallComplete?: boolean;
   summary: string;
   highestLeverageCriterionId: string;
   criteria: Array<{
@@ -101,6 +109,12 @@ type DraftAnalysis = {
     }>;
   }>;
   annotations: EditorAnnotation[];
+};
+
+type GuidanceAllocation = {
+  blockId: string;
+  guidanceIds: string[];
+  guide: ResponsiveBlockGuide;
 };
 
 type CachedAssignment = {
@@ -255,11 +269,21 @@ function isCachedAssignment(item: unknown): item is CachedAssignment {
   if (typeof assignment.dueLabel !== "string" || typeof assignment.wordLimit !== "number" || typeof assignment.task !== "string") return false;
   if (!Array.isArray(assignment.requirements) || !Array.isArray(assignment.criteria)) return false;
   if (!item.files.every((file) => isRecord(file) && typeof file.id === "string" && typeof file.name === "string" && typeof file.text === "string")) return false;
-  if (!item.blocks.every((block) => isRecord(block) && typeof block.id === "string" && typeof block.heading === "string" && typeof block.body === "string" && (block.bodyHtml === undefined || typeof block.bodyHtml === "string") && Array.isArray(block.guidanceIds))) return false;
+  if (!item.blocks.every((block) => isRecord(block)
+    && typeof block.id === "string"
+    && typeof block.heading === "string"
+    && typeof block.body === "string"
+    && (block.bodyHtml === undefined || typeof block.bodyHtml === "string")
+    && Array.isArray(block.guidanceIds)
+    && (block.guide === undefined || (isRecord(block.guide)
+      && typeof block.guide.encouragement === "string"
+      && typeof block.guide.nextStep === "string"
+      && typeof block.guide.biggerPicture === "string")))) return false;
   if (item.analysisStale !== undefined && typeof item.analysisStale !== "boolean") return false;
   if (item.annotationStateById !== undefined && (!isRecord(item.annotationStateById) || !Object.values(item.annotationStateById).every((state) => state === "open" || state === "edited" || state === "resolved"))) return false;
   if (item.analysisResult === null) return true;
   if (!isRecord(item.analysisResult) || typeof item.analysisResult.summary !== "string" || !Array.isArray(item.analysisResult.criteria)) return false;
+  if (item.analysisResult.overallComplete !== undefined && typeof item.analysisResult.overallComplete !== "boolean") return false;
   if (item.analysisResult.blockAnalysis !== undefined && (!Array.isArray(item.analysisResult.blockAnalysis) || !item.analysisResult.blockAnalysis.every((analysis) => isRecord(analysis)
     && typeof analysis.blockId === "string"
     && typeof analysis.summary === "string"
@@ -478,6 +502,26 @@ function reallocateGuidance(blocks: WritingBlock[], requirements: Requirement[])
   return next;
 }
 
+function applyGuidanceAllocations(blocks: WritingBlock[], allocations: GuidanceAllocation[], requirements: Requirement[]) {
+  const allocationMap = new Map(allocations.map((allocation) => [allocation.blockId, allocation]));
+  const allowedIds = new Set(requirements.map((requirement) => requirement.id));
+  return blocks.map((block) => {
+    const allocation = allocationMap.get(block.id);
+    if (!allocation) return block;
+    const guidanceIds = [...new Set(allocation.guidanceIds.filter((id) => allowedIds.has(id)))];
+    const guide = {
+      encouragement: allocation.guide.encouragement.trim(),
+      nextStep: allocation.guide.nextStep.trim(),
+      biggerPicture: allocation.guide.biggerPicture.trim(),
+    };
+    return {
+      ...block,
+      guidanceIds: guidanceIds.length ? guidanceIds : block.guidanceIds,
+      guide: guide.encouragement && guide.nextStep && guide.biggerPicture ? guide : block.guide,
+    };
+  });
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -492,7 +536,11 @@ function writingBlockWordCount(block: WritingBlock) {
   return wordCount(block.body) + (block.headingSource === "student" ? wordCount(block.heading) : 0);
 }
 
-async function requestAi<T>(action: "extract" | "structure" | "structure-draft" | "allocate" | "analyse", input: unknown): Promise<T> {
+function blockGuidanceSignature(blocks: WritingBlock[]) {
+  return JSON.stringify(blocks.map(({ id, heading, body }) => ({ id, heading, body })));
+}
+
+async function requestAi<T>(action: "extract" | "structure" | "structure-draft" | "allocate" | "analyse" | "analyse-block", input: unknown): Promise<T> {
   const response = await fetch("/api/ai", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -878,7 +926,6 @@ function ReviewScreen({ assignment, files, onBack, onContinue, assignmentMenu }:
             {assignment.criteria.map((criterion) => (
               <div className="criterion-line" key={criterion.id}>
                 <span>{criterion.name}</span>
-                <strong>{criterion.weight}%</strong>
               </div>
             ))}
           </section>
@@ -1008,6 +1055,9 @@ function Workspace({
   onInsert,
   onRemove,
   onAnalyse,
+  onAnalyseBlock,
+  analysingBlockId,
+  blockAnalysisErrors,
   onAnnotationsEdited,
   onAnnotationResolved,
   onAnnotationsRechecked,
@@ -1030,6 +1080,9 @@ function Workspace({
   onInsert: (anchorId: string, position: "before" | "after") => void;
   onRemove: (blockId: string) => void;
   onAnalyse: () => void;
+  onAnalyseBlock: (blockId: string) => void;
+  analysingBlockId: string | null;
+  blockAnalysisErrors: Record<string, string>;
   onAnnotationsEdited: (annotationIds: string[]) => void;
   onAnnotationResolved: (annotationId: string) => void;
   onAnnotationsRechecked: (states: Record<string, AnnotationState>) => void;
@@ -1344,7 +1397,6 @@ function Workspace({
             <div>
               <span className="criterion-focus-dot" aria-hidden="true" />
               <strong>{activeCriterion.name.toUpperCase()}</strong>
-              <span>{activeCriterion.weight}% of the mark</span>
               <p>{activeOpenCount} highlights. Hover or focus one to read the note; edit the text and Re-check.</p>
               <span className="criterion-focus-spacer" />
               <button className={activeEditedCount ? "recheck-button pulse" : "recheck-button"} type="button" onClick={recheckCriterion}>Re-check</button>
@@ -1377,7 +1429,7 @@ function Workspace({
                         const annotationCount = displayedAnnotations.filter((annotation) => annotation.criterionId === criterion.id).length;
                         return (
                           <article className={`criterion-card ${feedback?.tone ?? criterion.tone}`} key={criterion.id}>
-                            <div><strong>{criterion.name}</strong><span>{criterion.weight}%</span></div>
+                            <div><strong>{criterion.name}</strong></div>
                             <p>{feedback?.diagnosis ?? criterion.description}</p>
                             <p className="criterion-action"><strong>Next:</strong> {feedback?.action ?? "Review this criterion against the current draft."}</p>
                             <button type="button" disabled={annotationCount === 0} onClick={() => openCriterion(criterion.id)}>{annotationCount ? `See ${annotationCount} highlight${annotationCount === 1 ? "" : "s"} in the draft` : "No inline highlights for this criterion"}</button>
@@ -1405,14 +1457,17 @@ function Workspace({
                   const staleFindingCount = outstandingBlockAnnotations.length - blockAnnotations.length;
                   const words = writingBlockWordCount(block);
                   const displayHeading = block.heading.trim() || "this block";
+                  const isReviewing = analysingBlockId === block.id;
+                  const hasBlockReview = Boolean(blockReview);
+                  const nextStep = block.guide?.nextStep || guidance[0]?.text || "Decide what this section needs to help the reader understand, then write that idea in your own words.";
                   const status = words === 0
                     ? "empty"
-                    : analysis === "complete" && analysisResult
+                    : hasBlockReview
                       ? priorityCount > 0 ? "priority" : attentionCount > 0 || checks.some((check) => !check.met) ? "attention" : "good"
                       : "attention";
                   const statusLabel = words === 0
                     ? "Not started"
-                    : analysis !== "complete" || !analysisResult
+                    : !hasBlockReview
                       ? "In progress"
                       : status === "priority" ? "Needs work" : status === "attention" ? "Needs attention" : "On track";
                   const expanded = expandedBlockIds.has(block.id);
@@ -1427,23 +1482,40 @@ function Workspace({
                             <span className="guide-count">{completedChecks}/{checks.length} steps</span>
                             <span className="block-status"><i />{statusLabel}</span>
                           </div>
-                          <p>{guidance[0]?.text ?? "Write this section in the way that makes sense for your assignment."}</p>
-                          <div className="guidance-list" aria-label={`${displayHeading} checklist`}>
-                            {checks.map((check, checkIndex) => (
-                              <span className={check.met ? "met" : "unmet"} key={`${block.id}-check-${checkIndex}`}>
-                                <i aria-hidden="true">{check.met ? "✓" : "·"}</i>
-                                <span className="visually-hidden">{check.met ? "Met: " : "Not yet met: "}</span>
-                                {check.text}
-                              </span>
-                            ))}
+                          <div className="block-guide-content">
+                            {block.guide?.encouragement ? <p className="guide-encouragement">{block.guide.encouragement}</p> : null}
+                            <div className="guide-next-row">
+                              <div className="guide-next-step">
+                                <strong>{words ? "NEXT STEP" : "START HERE"}</strong>
+                                <span>{nextStep}</span>
+                              </div>
+                              <button
+                                className="block-review-button"
+                                type="button"
+                                disabled={words === 0 || analysis === "running" || analysingBlockId !== null}
+                                aria-busy={isReviewing}
+                                title={words === 0 ? "Write something in this block first" : undefined}
+                                onClick={() => onAnalyseBlock(block.id)}
+                              >{isReviewing ? "Reviewing…" : hasBlockReview ? "Review again" : "Review this block"}</button>
+                            </div>
+                            {block.guide?.biggerPicture ? <p className="guide-bigger-picture"><strong>Bigger picture:</strong> {block.guide.biggerPicture}</p> : null}
+                            {blockAnalysisErrors[block.id] ? <p className="block-review-error" role="alert">{blockAnalysisErrors[block.id]}</p> : null}
                           </div>
+                          <ul className="guidance-list" aria-label={`${displayHeading} checklist`}>
+                            {checks.map((check, checkIndex) => (
+                              <li className={check.met ? "met" : "unmet"} key={`${block.id}-check-${checkIndex}`}>
+                                <i aria-hidden="true">{check.met ? "✓" : "·"}</i>
+                                <span><span className="visually-hidden">{check.met ? "Met: " : "Not yet met: "}</span>{check.text}</span>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
-                        {analysis === "running" ? (
+                        {analysis === "running" || isReviewing ? (
                           <div className="block-analysis block-analysis-running">
-                            <span><i /><i /><i /></span>Reading this block against the rubric…
+                            <span><i /><i /><i /></span>{isReviewing ? "Reviewing this block…" : "Reading this block against the rubric…"}
                           </div>
                         ) : null}
-                        {analysis === "complete" && analysisResult ? (
+                        {blockReview && analysisResult && !isReviewing ? (
                           <section className="block-analysis" aria-label={`${displayHeading} rubric analysis`}>
                             <div className={`block-analysis-meta ${status}`}>
                               <i aria-hidden="true" />
@@ -1601,7 +1673,7 @@ function Workspace({
           <p>{coachAnnotation.what}</p>
           <div className="coach-improvement"><strong>HOW TO IMPROVE IT</strong><span>{coachAnnotation.how}</span></div>
           <div className="coach-note-actions">
-            <span>{coachCriterion?.name ?? "Rubric"}{coachCriterion ? ` · ${coachCriterion.weight}%` : ""}</span>
+            <span>{coachCriterion?.name ?? "Rubric"}</span>
             <button type="button" onClick={() => {
               onAnnotationResolved(coachAnnotation.id);
               setCoachNote(null);
@@ -1631,6 +1703,8 @@ function WorkspaceApp() {
   const [analysisStale, setAnalysisStale] = useState(false);
   const [annotationStateById, setAnnotationStateById] = useState<Record<string, AnnotationState>>({});
   const [analysisError, setAnalysisError] = useState("");
+  const [analysingBlockId, setAnalysingBlockId] = useState<string | null>(null);
+  const [blockAnalysisErrors, setBlockAnalysisErrors] = useState<Record<string, string>>({});
   const [isReading, setIsReading] = useState(false);
   const [isStructuring, setIsStructuring] = useState(false);
   const [importError, setImportError] = useState("");
@@ -1655,6 +1729,10 @@ function WorkspaceApp() {
   const documentRevision = useRef(0);
   const guidanceRequest = useRef(0);
   const structureRequest = useRef(0);
+  const guidanceRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestBlocksRef = useRef<WritingBlock[]>([]);
+  const lastGuidanceSignature = useRef("");
+  const pendingGuidanceSignature = useRef("");
 
   const attachedDraftText = useMemo(() => files
     .filter((file) => file.role === "Current draft" && file.text.trim())
@@ -1670,6 +1748,9 @@ function WorkspaceApp() {
     documentRevision.current = 0;
     guidanceRequest.current += 1;
     structureRequest.current += 1;
+    lastGuidanceSignature.current = "";
+    pendingGuidanceSignature.current = "";
+    if (guidanceRefreshTimer.current) clearTimeout(guidanceRefreshTimer.current);
     setStage(record.stage);
     setFiles(record.files);
     setPastedText(record.pastedText);
@@ -1678,8 +1759,9 @@ function WorkspaceApp() {
     setChoice(record.choice);
     setStructurePlan(record.structurePlan ?? []);
     setBlocks(record.blocks);
+    latestBlocksRef.current = record.blocks;
     setView(record.view);
-    setAnalysis(record.analysisResult ? "complete" : "idle");
+    setAnalysis(record.analysisResult && record.analysisResult.overallComplete !== false ? "complete" : "idle");
     setAnalysisResult(record.analysisResult ? {
       ...record.analysisResult,
       blockAnalysis: record.analysisResult.blockAnalysis ?? [],
@@ -1688,6 +1770,8 @@ function WorkspaceApp() {
     setAnalysisStale(record.analysisStale ?? false);
     setAnnotationStateById(record.annotationStateById ?? {});
     setAnalysisError("");
+    setAnalysingBlockId(null);
+    setBlockAnalysisErrors({});
     setImportError("");
     setStructureError("");
     setFocusHeadingId(null);
@@ -1695,6 +1779,10 @@ function WorkspaceApp() {
     setIsStructuring(false);
     setSaveLabel("Saved locally · just now");
   }, []);
+
+  useEffect(() => {
+    latestBlocksRef.current = blocks;
+  }, [blocks]);
 
   const stageCacheWrite = useCallback((cache: CachedAppState, immediate = false) => {
     if (!cacheWritableRef.current) return;
@@ -1784,6 +1872,7 @@ function WorkspaceApp() {
 
   useEffect(() => () => {
     if (cacheWriteTimer.current) clearTimeout(cacheWriteTimer.current);
+    if (guidanceRefreshTimer.current) clearTimeout(guidanceRefreshTimer.current);
   }, []);
 
   const switchAssignment = useCallback((id: string) => {
@@ -1986,9 +2075,27 @@ function WorkspaceApp() {
       }
 
       if (!nextBlocks.length) throw new Error("Simplifii could not place the draft into blocks. Your writing is still safe on this screen.");
+      try {
+        const guidanceResult = await requestAi<{ allocations: GuidanceAllocation[] }>("allocate", {
+          assignment,
+          blocks: nextBlocks.map(({ id, heading, headingSource, body, guidanceIds }) => ({ id, heading, headingSource, body, guidanceIds })),
+          plannedBlocks,
+        });
+        if (originId !== activeAssignmentIdRef.current
+          || originEpoch !== assignmentEpoch.current
+          || originImportRevision !== importRevision.current
+          || originDraftRevision !== draftRevision.current
+          || originExtractionRevision !== extractionRevision.current
+          || requestId !== structureRequest.current) return;
+        nextBlocks = applyGuidanceAllocations(nextBlocks, guidanceResult.allocations, assignment.requirements);
+        lastGuidanceSignature.current = blockGuidanceSignature(nextBlocks);
+      } catch {
+        // The workspace still opens with imported guidance if the responsive guide refresh is unavailable.
+      }
       documentRevision.current += 1;
       setStructurePlan(plannedBlocks);
       setBlocks(nextBlocks);
+      latestBlocksRef.current = nextBlocks;
       setStage("workspace");
       setView("guide");
       setAnalysis("idle");
@@ -2017,21 +2124,31 @@ function WorkspaceApp() {
 
   const updateBody = (blockId: string, value: string, bodyHtml: string) => {
     documentRevision.current += 1;
-    setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, body: value, bodyHtml } : block));
-    if (analysisResult) {
+    setBlocks((current) => {
+      const next = current.map((block) => block.id === blockId ? { ...block, body: value, bodyHtml } : block);
+      latestBlocksRef.current = next;
+      return next;
+    });
+    if (analysisResult && analysisResult.overallComplete !== false) {
       setAnalysis("complete");
       setAnalysisStale(true);
     } else {
       setAnalysis("idle");
     }
+    setBlockAnalysisErrors((current) => current[blockId] ? { ...current, [blockId]: "" } : current);
     setAnalysisError("");
     setSaveLabel("Saving locally…");
+    scheduleGuidanceRefresh();
   };
 
   const updateHeading = (blockId: string, value: string) => {
     documentRevision.current += 1;
-    setBlocks((current) => current.map((block) => block.id === blockId ? { ...block, heading: value } : block));
-    if (analysisResult) {
+    setBlocks((current) => {
+      const next = current.map((block) => block.id === blockId ? { ...block, heading: value } : block);
+      latestBlocksRef.current = next;
+      return next;
+    });
+    if (analysisResult && analysisResult.overallComplete !== false) {
       setAnalysis("complete");
       setAnalysisStale(true);
     } else {
@@ -2039,6 +2156,7 @@ function WorkspaceApp() {
     }
     setAnalysisError("");
     setSaveLabel("Saving locally…");
+    scheduleGuidanceRefresh();
   };
 
   const insertBlock = (anchorId: string, position: "before" | "after") => {
@@ -2051,9 +2169,10 @@ function WorkspaceApp() {
       const newBlock: WritingBlock = { id: newBlockId, heading: "", headingSource: "student", body: "", guidanceIds: [...anchor.guidanceIds] };
       const next = [...current];
       next.splice(position === "before" ? index : index + 1, 0, newBlock);
+      latestBlocksRef.current = next;
       return next;
     });
-    if (analysisResult) {
+    if (analysisResult && analysisResult.overallComplete !== false) {
       setAnalysis("complete");
       setAnalysisStale(true);
     } else {
@@ -2062,6 +2181,7 @@ function WorkspaceApp() {
     setAnalysisError("");
     setSaveLabel("Saving locally…");
     setFocusHeadingId(newBlockId);
+    scheduleGuidanceRefresh();
   };
 
   const removeBlock = (blockId: string) => {
@@ -2070,8 +2190,12 @@ function WorkspaceApp() {
     if (!block) return;
     if ((block.heading.trim() || block.body.trim()) && !window.confirm(`Remove ${block.heading.trim() || "this block"}? Its writing will be removed from this browser workspace.`)) return;
     documentRevision.current += 1;
-    setBlocks((current) => current.filter((candidate) => candidate.id !== blockId));
-    if (analysisResult) {
+    setBlocks((current) => {
+      const next = current.filter((candidate) => candidate.id !== blockId);
+      latestBlocksRef.current = next;
+      return next;
+    });
+    if (analysisResult && analysisResult.overallComplete !== false) {
       setAnalysis("complete");
       setAnalysisStale(true);
     } else {
@@ -2080,6 +2204,7 @@ function WorkspaceApp() {
     setAnalysisError("");
     setSaveLabel("Saving locally…");
     setFocusHeadingId(null);
+    scheduleGuidanceRefresh();
   };
 
   const markAnnotationsEdited = useCallback((annotationIds: string[]) => {
@@ -2097,36 +2222,50 @@ function WorkspaceApp() {
     setAnnotationStateById((current) => ({ ...current, [annotationId]: "resolved" }));
   }, []);
 
-  const refreshGuidance = async () => {
-    const locallyAllocated = reallocateGuidance(blocks, assignment.requirements);
-    documentRevision.current += 1;
+  function scheduleGuidanceRefresh() {
+    if (guidanceRefreshTimer.current) clearTimeout(guidanceRefreshTimer.current);
+    guidanceRefreshTimer.current = setTimeout(() => {
+      guidanceRefreshTimer.current = null;
+      void refreshGuidance();
+    }, 2200);
+  }
+
+  async function refreshGuidance() {
+    if (guidanceRefreshTimer.current) {
+      clearTimeout(guidanceRefreshTimer.current);
+      guidanceRefreshTimer.current = null;
+    }
+    const sourceBlocks = latestBlocksRef.current;
+    const guidanceSignature = blockGuidanceSignature(sourceBlocks);
+    if (guidanceSignature === lastGuidanceSignature.current || guidanceSignature === pendingGuidanceSignature.current) return;
+    pendingGuidanceSignature.current = guidanceSignature;
+    const locallyAllocated = reallocateGuidance(sourceBlocks, assignment.requirements);
     setBlocks(locallyAllocated);
-    if (locallyAllocated.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) return;
+    latestBlocksRef.current = locallyAllocated;
 
     const originId = activeAssignmentIdRef.current;
     const originEpoch = assignmentEpoch.current;
     const originDocumentRevision = documentRevision.current;
     const requestId = ++guidanceRequest.current;
     try {
-      const result = await requestAi<{ allocations: Array<{ blockId: string; guidanceIds: string[] }> }>("allocate", {
-        requirements: assignment.requirements,
-        blocks: locallyAllocated.map(({ id, heading, body, guidanceIds }) => ({ id, heading, body, guidanceIds })),
+      const result = await requestAi<{ allocations: GuidanceAllocation[] }>("allocate", {
+        assignment,
+        blocks: locallyAllocated.map(({ id, heading, headingSource, body, guidanceIds }) => ({ id, heading, headingSource, body, guidanceIds })),
         plannedBlocks: structurePlan,
       });
       if (requestId !== guidanceRequest.current || originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) return;
-      const allocationMap = new Map(result.allocations.map((allocation) => [allocation.blockId, allocation.guidanceIds]));
-      const allowedIds = new Set(assignment.requirements.map((requirement) => requirement.id));
-      documentRevision.current += 1;
-      setBlocks((current) => current.map((block) => {
-        const allocated = allocationMap.get(block.id);
-        if (!allocated) return block;
-        const guidanceIds = [...new Set(allocated.filter((id) => allowedIds.has(id)))];
-        return guidanceIds.length ? { ...block, guidanceIds } : block;
-      }));
+      setBlocks((current) => {
+        const next = applyGuidanceAllocations(current, result.allocations, assignment.requirements);
+        latestBlocksRef.current = next;
+        return next;
+      });
+      lastGuidanceSignature.current = guidanceSignature;
     } catch {
       // The inherited/local allocation remains intact if the background AI refresh is unavailable.
+    } finally {
+      if (pendingGuidanceSignature.current === guidanceSignature) pendingGuidanceSignature.current = "";
     }
-  };
+  }
 
   const analyse = async () => {
     if (blocks.reduce((total, block) => total + writingBlockWordCount(block), 0) < 20) {
@@ -2136,6 +2275,7 @@ function WorkspaceApp() {
     const originId = activeAssignmentIdRef.current;
     const originEpoch = assignmentEpoch.current;
     const originDocumentRevision = documentRevision.current;
+    setAnalysingBlockId(null);
     setAnalysis("running");
     setAnalysisError("");
     try {
@@ -2147,7 +2287,7 @@ function WorkspaceApp() {
         if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysis("idle");
         return;
       }
-      setAnalysisResult(result);
+      setAnalysisResult({ ...result, overallComplete: true });
       setAnalysis("complete");
       setAnalysisStale(false);
       setAnnotationStateById({});
@@ -2156,6 +2296,66 @@ function WorkspaceApp() {
         setAnalysis("idle");
         setAnalysisError(error instanceof Error ? error.message : "Simplifii could not analyse the draft.");
       }
+    }
+  };
+
+  const analyseBlock = async (blockId: string) => {
+    const block = latestBlocksRef.current.find((candidate) => candidate.id === blockId);
+    if (!block) return;
+    if (writingBlockWordCount(block) < 8) {
+      setBlockAnalysisErrors((current) => ({ ...current, [blockId]: "Write a little more in this block before asking Simplifii to review it." }));
+      return;
+    }
+
+    const originId = activeAssignmentIdRef.current;
+    const originEpoch = assignmentEpoch.current;
+    const originDocumentRevision = documentRevision.current;
+    const previousAnnotationIds = new Set((analysisResult?.annotations ?? [])
+      .filter((annotation) => annotation.blockId === blockId)
+      .map((annotation) => annotation.id));
+    setAnalysingBlockId(blockId);
+    setBlockAnalysisErrors((current) => ({ ...current, [blockId]: "" }));
+    try {
+      const result = await requestAi<DraftAnalysis>("analyse-block", {
+        assignment,
+        blocks: [{
+          id: block.id,
+          heading: block.heading,
+          headingSource: block.headingSource,
+          body: block.body,
+          guidanceIds: block.guidanceIds,
+        }],
+      });
+      if (originId !== activeAssignmentIdRef.current || originEpoch !== assignmentEpoch.current || originDocumentRevision !== documentRevision.current) return;
+
+      const replacementAnnotations = result.annotations.map((annotation) => ({ ...annotation, id: uid("annotation") }));
+      setAnalysisResult((current) => ({
+        overallComplete: current ? current.overallComplete : false,
+        summary: current?.summary ?? "",
+        highestLeverageCriterionId: current?.highestLeverageCriterionId ?? "",
+        criteria: current?.criteria ?? [],
+        blockAnalysis: [
+          ...(current?.blockAnalysis ?? []).filter((item) => item.blockId !== blockId),
+          ...result.blockAnalysis,
+        ],
+        annotations: [
+          ...(current?.annotations ?? []).filter((annotation) => annotation.blockId !== blockId),
+          ...replacementAnnotations,
+        ],
+      }));
+      setAnnotationStateById((current) => Object.fromEntries(
+        Object.entries(current).filter(([annotationId]) => !previousAnnotationIds.has(annotationId)),
+      ));
+      setSaveLabel("Saving locally…");
+    } catch (error) {
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current && originDocumentRevision === documentRevision.current) {
+        setBlockAnalysisErrors((current) => ({
+          ...current,
+          [blockId]: error instanceof Error ? error.message : "Simplifii could not review this block.",
+        }));
+      }
+    } finally {
+      if (originId === activeAssignmentIdRef.current && originEpoch === assignmentEpoch.current) setAnalysingBlockId(null);
     }
   };
 
@@ -2221,6 +2421,9 @@ function WorkspaceApp() {
       onInsert={insertBlock}
       onRemove={removeBlock}
       onAnalyse={analyse}
+      onAnalyseBlock={analyseBlock}
+      analysingBlockId={analysingBlockId}
+      blockAnalysisErrors={blockAnalysisErrors}
       onAnnotationsEdited={markAnnotationsEdited}
       onAnnotationResolved={resolveAnnotation}
       onAnnotationsRechecked={setAnnotationStateById}
