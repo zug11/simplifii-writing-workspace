@@ -4,8 +4,26 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 
 type SendState = "idle" | "sending" | "sent" | "error";
 
+const AREAS = [
+  "Uploading your assignment",
+  "What Simplifii understood",
+  "Choosing how to start",
+  "The writing workspace",
+  "AI feedback and rubric annotations",
+  "General feedback",
+] as const;
+
 const CATEGORIES = ["Something's broken", "Confusing", "Idea", "Something else"] as const;
 const RATINGS = [1, 2, 3, 4, 5] as const;
+
+const NEXT_FEATURES = [
+  { id: "dashboard", label: "A dashboard" },
+  { id: "term-planner", label: "A term planner with features" },
+  { id: "aura", label: "AURA — an AI coaching and study assistant" },
+  { id: "additional", label: "Something else not listed here" },
+] as const;
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function FocusTrap({ active, containerRef }: { active: boolean; containerRef: React.RefObject<HTMLElement | null> }) {
   useEffect(() => {
@@ -37,8 +55,13 @@ function FocusTrap({ active, containerRef }: { active: boolean; containerRef: Re
 export function FeedbackWidget() {
   const [open, setOpen] = useState(false);
   const [rating, setRating] = useState<number | null>(null);
+  const [area, setArea] = useState<(typeof AREAS)[number] | "">("");
   const [category, setCategory] = useState<(typeof CATEGORIES)[number] | "">("");
   const [message, setMessage] = useState("");
+  const [nextWishes, setNextWishes] = useState("");
+  const [interestedFeatures, setInterestedFeatures] = useState<string[]>([]);
+  const [coDesignOptIn, setCoDesignOptIn] = useState(false);
+  const [contactEmail, setContactEmail] = useState("");
   const [honeypot, setHoneypot] = useState("");
   const [state, setState] = useState<SendState>("idle");
   const [error, setError] = useState("");
@@ -66,8 +89,17 @@ export function FeedbackWidget() {
     if (state !== "sent") return;
     setState("idle");
     setRating(null);
+    setArea("");
     setCategory("");
     setMessage("");
+    setNextWishes("");
+    setInterestedFeatures([]);
+    setCoDesignOptIn(false);
+    setContactEmail("");
+  }
+
+  function toggleFeature(id: string) {
+    setInterestedFeatures((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -76,12 +108,20 @@ export function FeedbackWidget() {
       setError("Choose a rating.");
       return;
     }
+    if (!area) {
+      setError("Choose which part this is about.");
+      return;
+    }
     if (!category) {
       setError("Choose a category.");
       return;
     }
     if (!message.trim()) {
       setError("Add a short message.");
+      return;
+    }
+    if (coDesignOptIn && !EMAIL_PATTERN.test(contactEmail.trim())) {
+      setError("Add an email so we can reach you about co-design.");
       return;
     }
 
@@ -95,8 +135,13 @@ export function FeedbackWidget() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           rating,
+          area,
           category,
           message: message.trim(),
+          nextWishes: nextWishes.trim(),
+          interestedFeatures,
+          coDesignOptIn,
+          contactEmail: coDesignOptIn ? contactEmail.trim() : "",
           page: typeof window !== "undefined" ? window.location.pathname : "unknown",
           honeypot,
         }),
@@ -170,16 +215,32 @@ export function FeedbackWidget() {
                   </div>
                 </fieldset>
 
-                <label className="feedback-label" htmlFor="feedback-category">What kind of feedback is this?</label>
-                <select
-                  id="feedback-category"
-                  className="feedback-select"
-                  value={category}
-                  onChange={(event) => setCategory(event.target.value as (typeof CATEGORIES)[number])}
-                >
-                  <option value="" disabled>Choose one</option>
-                  {CATEGORIES.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
+                <div className="feedback-row">
+                  <div className="feedback-col">
+                    <label className="feedback-label" htmlFor="feedback-area">Which part is this about?</label>
+                    <select
+                      id="feedback-area"
+                      className="feedback-select"
+                      value={area}
+                      onChange={(event) => setArea(event.target.value as (typeof AREAS)[number])}
+                    >
+                      <option value="" disabled>Choose one</option>
+                      {AREAS.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </div>
+                  <div className="feedback-col">
+                    <label className="feedback-label" htmlFor="feedback-category">What kind of feedback?</label>
+                    <select
+                      id="feedback-category"
+                      className="feedback-select"
+                      value={category}
+                      onChange={(event) => setCategory(event.target.value as (typeof CATEGORIES)[number])}
+                    >
+                      <option value="" disabled>Choose one</option>
+                      {CATEGORIES.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </div>
+                </div>
 
                 <label className="feedback-label" htmlFor="feedback-message">Tell us what happened</label>
                 <textarea
@@ -190,6 +251,55 @@ export function FeedbackWidget() {
                   placeholder="What were you doing, and what did you expect to happen?"
                   onChange={(event) => setMessage(event.target.value)}
                 />
+
+                <label className="feedback-label" htmlFor="feedback-next">What would you like to see next?</label>
+                <textarea
+                  id="feedback-next"
+                  className="feedback-textarea feedback-textarea-short"
+                  value={nextWishes}
+                  maxLength={2000}
+                  placeholder="Anything Simplifii is missing for you, in your own words (optional)"
+                  onChange={(event) => setNextWishes(event.target.value)}
+                />
+
+                <fieldset className="feedback-field">
+                  <legend>Or pick from what we're considering</legend>
+                  <div className="feedback-checklist">
+                    {NEXT_FEATURES.map((feature) => (
+                      <label key={feature.id} className="feedback-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={interestedFeatures.includes(feature.id)}
+                          onChange={() => toggleFeature(feature.id)}
+                        />
+                        {feature.label}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <label className="feedback-checkbox feedback-codesign">
+                  <input
+                    type="checkbox"
+                    checked={coDesignOptIn}
+                    onChange={(event) => setCoDesignOptIn(event.target.checked)}
+                  />
+                  I&apos;d like to help shape what gets built next (join the co-design team)
+                </label>
+
+                {coDesignOptIn ? (
+                  <div>
+                    <label className="feedback-label" htmlFor="feedback-email">Email, so we can reach you</label>
+                    <input
+                      id="feedback-email"
+                      className="feedback-select"
+                      type="email"
+                      value={contactEmail}
+                      placeholder="you@example.com"
+                      onChange={(event) => setContactEmail(event.target.value)}
+                    />
+                  </div>
+                ) : null}
 
                 <input
                   className="visually-hidden"

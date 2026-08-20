@@ -800,6 +800,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 .feedback-sent p { margin: 0; color: var(--muted); font: 400 14px/1.6 Inter, sans-serif; }
 .feedback-sent .primary-button { align-self: flex-start; }
 
+.feedback-row { display: flex; gap: 12px; }
+.feedback-col { flex: 1; min-width: 0; }
+.feedback-textarea-short { min-height: 64px; }
+.feedback-checklist { display: flex; flex-direction: column; gap: 9px; }
+.feedback-checkbox { display: flex; align-items: flex-start; gap: 9px; font: 400 14px/1.5 Inter, sans-serif; color: var(--text-2); cursor: pointer; }
+.feedback-checkbox input { margin-top: 3px; flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.feedback-codesign { font: 500 14px/1.5 Plus Jakarta Sans, sans-serif; padding: 11px 12px; border: 1px solid var(--line-3); border-radius: 11px; background: var(--bg); }
+
+@media (max-width: 620px) {
+  .feedback-row { flex-direction: column; gap: 16px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .feedback-trigger, .feedback-rating { transition: none; }
 }
