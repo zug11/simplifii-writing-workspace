@@ -19,6 +19,7 @@ import {
   type EditorAnnotation,
   type EditorCommand,
 } from "@/app/components/RichTextEditor";
+import { FeedbackWidget } from "@/app/components/FeedbackWidget";
 import { prepareBrowserCache, quarantineUnreadableBrowserCache, readBrowserCache, writeBrowserCache, writeBrowserJournal } from "@/lib/browser-cache";
 import { projectDraftIntoBlocks, projectDraftIntoOneBlock, segmentDraft, type DraftGrouping } from "@/lib/draft-structure";
 
@@ -659,7 +660,12 @@ function InviteBoundary() {
 
   if (state === "checking") return <InviteGate checking />;
   if (state === "required") return <InviteGate onGranted={() => setState("granted")} />;
-  return <WorkspaceApp />;
+  return (
+    <>
+      <WorkspaceApp />
+      <FeedbackWidget />
+    </>
+  );
 }
 
 function AssignmentSwitcher({ ready, activeId, activeTitle, storageNote, assignments, onSelect, onCreate, onDelete }: AssignmentMenuProps) {
