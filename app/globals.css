@@ -699,3 +699,38 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   .coach-note-actions > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workspace-toast { width: max-content; white-space: normal; }
 }
+
+.progress-shell { margin-bottom: 18px; }
+.progress-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.progress-top strong { font: 600 14px Plus Jakarta Sans, sans-serif; }
+.progress-top span { color: var(--muted-2); font-size: 12px; }
+.progress-track { height: 8px; border-radius: 999px; background: var(--line-4); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #a89df8); transition: width 220ms ease; }
+.progress-steps { display: flex; gap: 6px; margin-top: 10px; }
+.progress-step { flex: 1; height: 4px; border-radius: 999px; background: var(--line-4); }
+.progress-step.done { background: var(--good); }
+
+.next-task-chip { margin-bottom: 18px; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--line-2); box-shadow: 0 8px 20px var(--shadow-soft); }
+.next-task-chip .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.next-task-chip .label { color: var(--muted-3); font: 700 10px Plus Jakarta Sans, sans-serif; letter-spacing: 0.08em; }
+.next-task-chip .task { font: 500 14px Plus Jakarta Sans, sans-serif; color: var(--text-2); }
+.next-task-chip button { margin-left: auto; flex: none; padding: 6px 12px; border: 1px solid rgba(109, 90, 224, 0.36); border-radius: 8px; background: var(--card); color: var(--accent-3); cursor: pointer; font: 600 12px Plus Jakarta Sans, sans-serif; }
+.next-task-chip button:hover { background: color-mix(in srgb, var(--accent) 7%, var(--card)); }
+
+.suggested-block { margin-top: 14px; padding: 16px 18px; border: 1.5px dashed var(--line-5); border-radius: 20px; background: rgba(109, 90, 224, 0.03); display: flex; align-items: center; gap: 14px; }
+.suggested-block .icon { flex: none; width: 34px; height: 34px; border-radius: 10px; background: rgba(109, 90, 224, 0.12); display: grid; place-items: center; color: var(--accent-3); font: 700 16px Plus Jakarta Sans, sans-serif; }
+.suggested-block strong { font: 600 14px Plus Jakarta Sans, sans-serif; }
+.suggested-block p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.suggested-block button { margin-left: auto; flex: none; padding: 8px 14px; border: 0; border-radius: 8px; background: var(--accent); color: white; cursor: pointer; font: 600 12px Plus Jakarta Sans, sans-serif; }
+.suggested-block button:hover { background: var(--accent-2); }
+
+@media (max-width: 680px) {
+  .next-task-chip { flex-wrap: wrap; }
+  .next-task-chip button { margin-left: 0; }
+  .suggested-block { flex-direction: column; align-items: flex-start; }
+  .suggested-block button { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill { transition: none; }
+}
