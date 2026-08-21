@@ -845,15 +845,15 @@ function ImportScreen({
       <main className="setup-main">
         <section className="setup-intro">
           <span className="eyebrow">START AN ASSIGNMENT</span>
-          <h1>Add what your course gave you.</h1>
-          <p>Simplifii sorts the files, extracts what you need to do, and carries it into the writing workspace.</p>
+          <h1>Add your assignment brief and rubric.</h1>
+          <p>For this test, just those two: the instructions you were given, and how it's marked. Simplifii reads them and carries the details into your writing workspace. Nothing else yet, even if you have a course outline or a draft on hand.</p>
         </section>
 
         <section className="setup-card" aria-labelledby="materials-heading">
           <div className="card-heading-row">
             <div>
-              <h2 id="materials-heading">Assignment material</h2>
-              <p>Brief, rubric, course outline, current draft—or whatever your institution calls them.</p>
+              <h2 id="materials-heading">Assignment brief and rubric only</h2>
+              <p>Two files max for this test: what you were given for the assignment, and the marking criteria. Hold off on the course outline or a draft for now.</p>
             </div>
             <span className="quiet-pill">PDF · DOCX · text</span>
           </div>
@@ -892,6 +892,9 @@ function ImportScreen({
                 </div>
               ))}
             </div>
+          ) : null}
+          {files.length > 2 ? (
+            <p className="inline-error" role="alert">That's more than the two this test covers. Remove the extra files so it's just the brief and the rubric.</p>
           ) : null}
 
           <div className="paste-divider"><span>or paste the wording</span></div>
