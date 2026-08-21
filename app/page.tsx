@@ -846,7 +846,7 @@ function ImportScreen({
         <section className="setup-intro">
           <span className="eyebrow">START AN ASSIGNMENT</span>
           <h1>Add your assignment brief and rubric.</h1>
-          <p>For this test, just those two: the instructions you were given, and how it's marked. Simplifii reads them and carries the details into your writing workspace. Nothing else yet, even if you have a course outline or a draft on hand.</p>
+          <p>For this test, just those two: the instructions you were given, and how it is marked. Simplifii reads them and carries the details into your writing workspace. Nothing else yet, even if you have a course outline or a draft on hand.</p>
         </section>
 
         <section className="setup-card" aria-labelledby="materials-heading">
@@ -894,7 +894,7 @@ function ImportScreen({
             </div>
           ) : null}
           {files.length > 2 ? (
-            <p className="inline-error" role="alert">That's more than the two this test covers. Remove the extra files so it's just the brief and the rubric.</p>
+            <p className="inline-error" role="alert">That is more than the two this test covers. Remove the extra files so it is just the brief and the rubric.</p>
           ) : null}
 
           <div className="paste-divider"><span>or paste the wording</span></div>
@@ -1147,14 +1147,14 @@ function Workspace({
     };
   }, [blocks, requirementMap, blockAnalysisMap]);
   const nextTask = useMemo(() => {
-    for (const block of blocks) {
+    const candidates = blocks.map((block) => {
       const guidance = block.guidanceIds.map((id) => requirementMap.get(id)).filter((item): item is Requirement => Boolean(item));
       const blockReview = blockAnalysisMap.get(block.id);
       const checks = blockReview?.checklist.length ? blockReview.checklist : guidance.map((requirement) => ({ text: requirement.text, met: false }));
       const firstUnmet = checks.find((check) => !check.met);
-      if (firstUnmet) return { blockId: block.id, heading: block.heading || "this block", text: firstUnmet.text };
-    }
-    return null;
+      return firstUnmet ? { blockId: block.id, heading: block.heading || "this block", text: firstUnmet.text } : null;
+    });
+    return candidates.find((candidate): candidate is { blockId: string; heading: string; text: string } => Boolean(candidate)) ?? null;
   }, [blocks, requirementMap, blockAnalysisMap]);
   const unhomedRequirements = useMemo(
     () => findUnhomedRequirements(assignment.requirements, blocks),
