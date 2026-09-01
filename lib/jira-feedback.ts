@@ -1,6 +1,7 @@
 const DEFAULT_BASE_URL = "https://simplifiiy.atlassian.net";
 const DEFAULT_PROJECT_KEY = "SCRUM";
 const DEFAULT_ISSUE_TYPE = "Task";
+const DEFAULT_JIRA_EMAIL = "a.saint-james@unsw.edu.au";
 // aaron@simplifii.com.au is not a registered Atlassian user on this site (checked via
 // user search, zero matches), so it can never resolve to an assignee. The verified
 // account on simplifiiy.atlassian.net is a.saint-james@unsw.edu.au. Override with
@@ -21,7 +22,7 @@ export type FeedbackInput = {
 };
 
 function configuration() {
-  const email = process.env.JIRA_EMAIL?.trim() ?? "";
+  const email = process.env.JIRA_EMAIL?.trim() || DEFAULT_JIRA_EMAIL;
   const apiToken = process.env.JIRA_API_TOKEN?.trim() ?? "";
   if (!email || !apiToken) return null;
   return {
