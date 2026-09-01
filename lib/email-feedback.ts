@@ -1,4 +1,5 @@
 const RESEND_API_URL = "https://api.resend.com/emails";
+const DEFAULT_FROM_EMAIL = "Simplifii Feedback <feedback@simplifii.com.au>";
 const DEFAULT_TO_EMAIL = "aaron@simplifii.com.au";
 const EMAIL_REQUEST_TIMEOUT_MS = 8000;
 
@@ -16,8 +17,8 @@ export type FeedbackInput = {
 
 function configuration() {
   const apiKey = process.env.RESEND_API_KEY?.trim() ?? "";
-  const fromEmail = process.env.FEEDBACK_FROM_EMAIL?.trim() ?? "";
-  if (!apiKey || !fromEmail) return null;
+  const fromEmail = process.env.FEEDBACK_FROM_EMAIL?.trim() || DEFAULT_FROM_EMAIL;
+  if (!apiKey) return null;
   return {
     apiKey,
     fromEmail,
