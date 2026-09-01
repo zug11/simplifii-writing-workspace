@@ -1,5 +1,5 @@
 import { checkInviteAccess, readJsonBody, validateSameOriginJsonRequest } from "@/lib/invite-access";
-import { createFeedbackIssue, jiraFeedbackConfigured } from "@/lib/jira-feedback";
+import { emailFeedbackConfigured, sendFeedbackEmail } from "@/lib/email-feedback";
 
 const MAX_MESSAGE_CHARACTERS = 4000;
 const MAX_WISHES_CHARACTERS = 2000;
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Enter your invite code to send feedback." }, { status: 401, headers: NO_STORE_HEADERS });
   }
 
-  if (!jiraFeedbackConfigured()) {
+  if (!emailFeedbackConfigured()) {
     return Response.json({ error: "Feedback collection is not configured yet." }, { status: 503, headers: NO_STORE_HEADERS });
   }
 
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const issue = await createFeedbackIssue({
+    const delivery = await sendFeedbackEmail({
       rating,
       area: area.trim().slice(0, 80),
       category: category.trim().slice(0, 60),
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
       contactEmail: wantsCoDesign && typeof contactEmail === "string" ? contactEmail.trim().slice(0, MAX_EMAIL_CHARACTERS) : "",
       page: typeof page === "string" && page.trim() ? page.trim().slice(0, 200) : "unknown",
     });
-    return Response.json({ ok: true, key: issue.key }, { headers: NO_STORE_HEADERS });
+    return Response.json({ ok: true, id: delivery.id }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     console.error("Simplifii feedback submission failed", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "That feedback could not be sent. Try again shortly." }, { status: 502, headers: NO_STORE_HEADERS });
