@@ -2,7 +2,7 @@
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
-type SendState = "idle" | "sending" | "sent" | "error";
+type SendState = "idle" | "opened";
 
 const AREAS = [
   "Uploading your assignment",
@@ -24,6 +24,7 @@ const NEXT_FEATURES = [
 ] as const;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const FEEDBACK_RECIPIENT = "aaron@simplifii.com.au";
 
 function FocusTrap({ active, containerRef }: { active: boolean; containerRef: React.RefObject<HTMLElement | null> }) {
   useEffect(() => {
@@ -62,7 +63,6 @@ export function FeedbackWidget() {
   const [interestedFeatures, setInterestedFeatures] = useState<string[]>([]);
   const [coDesignOptIn, setCoDesignOptIn] = useState(false);
   const [contactEmail, setContactEmail] = useState("");
-  const [honeypot, setHoneypot] = useState("");
   const [state, setState] = useState<SendState>("idle");
   const [error, setError] = useState("");
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -86,7 +86,7 @@ export function FeedbackWidget() {
   function close() {
     setOpen(false);
     triggerRef.current?.focus();
-    if (state !== "sent") return;
+    if (state !== "opened") return;
     setState("idle");
     setRating(null);
     setArea("");
@@ -102,7 +102,7 @@ export function FeedbackWidget() {
     setInterestedFeatures((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!rating) {
       setError("Choose a rating.");
@@ -125,34 +125,26 @@ export function FeedbackWidget() {
       return;
     }
 
-    setState("sending");
+    const selectedFeatures = NEXT_FEATURES
+      .filter((feature) => interestedFeatures.includes(feature.id))
+      .map((feature) => feature.label);
+    const lines = [
+      message.trim(),
+      "",
+      `Rating: ${rating}/5`,
+      `Area: ${area}`,
+      `Category: ${category}`,
+      nextWishes.trim() ? `Wants to see next: ${nextWishes.trim()}` : "",
+      selectedFeatures.length ? `Interested in: ${selectedFeatures.join(", ")}` : "",
+      coDesignOptIn ? `Wants to join the co-design team (${contactEmail.trim()})` : "",
+      `Page: ${window.location.pathname}`,
+    ].filter((line) => line.length > 0);
+    const subject = `Simplifii tester feedback · ${area} · ${rating}/5`;
+    const mailto = `mailto:${FEEDBACK_RECIPIENT}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines.join("\n"))}`;
+
     setError("");
-    try {
-      const response = await fetch("/api/feedback", {
-        method: "POST",
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          rating,
-          area,
-          category,
-          message: message.trim(),
-          nextWishes: nextWishes.trim(),
-          interestedFeatures,
-          coDesignOptIn,
-          contactEmail: coDesignOptIn ? contactEmail.trim() : "",
-          page: typeof window !== "undefined" ? window.location.pathname : "unknown",
-          honeypot,
-        }),
-      });
-      const payload = (await response.json()) as { ok?: boolean; error?: string };
-      if (!response.ok || !payload.ok) throw new Error(payload.error || "That feedback could not be sent.");
-      setState("sent");
-    } catch (caught) {
-      setState("error");
-      setError(caught instanceof Error ? caught.message : "That feedback could not be sent.");
-    }
+    setState("opened");
+    window.location.href = mailto;
   }
 
   return (
@@ -181,14 +173,14 @@ export function FeedbackWidget() {
             <FocusTrap active={open} containerRef={dialogRef} />
             <div className="feedback-dialog-head">
               <h2 id="feedback-heading" tabIndex={-1} ref={headingRef}>
-                {state === "sent" ? "Thanks — that's been sent." : "How's this working for you?"}
+                {state === "opened" ? "Your email draft is ready." : "How's this working for you?"}
               </h2>
               <button type="button" className="feedback-close" aria-label="Close feedback form" onClick={close}>×</button>
             </div>
 
-            {state === "sent" ? (
+            {state === "opened" ? (
               <div className="feedback-sent">
-                <p>Your feedback goes straight to the team building this. No account needed, nothing else to do.</p>
+                <p>Your email app should have opened with the feedback filled in. Review it, then press Send.</p>
                 <button type="button" className="primary-button" onClick={close}>Done</button>
               </div>
             ) : (
@@ -301,21 +293,10 @@ export function FeedbackWidget() {
                   </div>
                 ) : null}
 
-                <input
-                  className="visually-hidden"
-                  type="text"
-                  name="website"
-                  tabIndex={-1}
-                  autoComplete="off"
-                  aria-hidden="true"
-                  value={honeypot}
-                  onChange={(event) => setHoneypot(event.target.value)}
-                />
-
                 <div className="feedback-actions">
-                  <span>{error ? <span className="inline-error" role="alert">{error}</span> : "Sent to the build team, not stored anywhere else."}</span>
-                  <button className="primary-button" type="submit" disabled={state === "sending"}>
-                    {state === "sending" ? "Sending…" : "Send feedback"}
+                  <span>{error ? <span className="inline-error" role="alert">{error}</span> : "Opens your email app. Simplifii does not store this feedback."}</span>
+                  <button className="primary-button" type="submit">
+                    Open email draft
                   </button>
                 </div>
               </form>
