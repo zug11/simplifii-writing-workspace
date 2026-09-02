@@ -455,6 +455,22 @@ function guidanceForHeading(heading: string, requirements: Requirement[]) {
   return filtered.length ? filtered : requirements.map((requirement) => requirement.id);
 }
 
+// A requirement with no block whose heading actually matches it still gets
+// forced into some block by reallocateGuidance's fallback. That keeps every
+// requirement covered, but silently — the student never learns their
+// structure might be missing a section for it. This surfaces that gap
+// instead of hiding it.
+function findUnhomedRequirements(requirements: Requirement[], blocks: WritingBlock[]): Requirement[] {
+  return requirements.filter((requirement) => {
+    if (requirement.scope === "whole-document") return false;
+    return !blocks.some((block) => {
+      const heading = block.heading.trim().toLowerCase();
+      if (!heading) return false;
+      return requirement.keywords.some((keyword) => heading.includes(keyword) || keyword.includes(heading));
+    });
+  });
+}
+
 function createBlocks(assignment: Assignment, choice: StructureChoice): WritingBlock[] {
   if (choice === "self") {
     return [{ id: uid("block"), heading: "", headingSource: "student", body: "", guidanceIds: assignment.requirements.map((requirement) => requirement.id) }];
@@ -835,15 +851,15 @@ function ImportScreen({
       <main className="setup-main">
         <section className="setup-intro">
           <span className="eyebrow">START AN ASSIGNMENT</span>
-          <h1>Add what your course gave you.</h1>
-          <p>Simplifii sorts the files, extracts what you need to do, and carries it into the writing workspace.</p>
+          <h1>Add your assignment brief and rubric.</h1>
+          <p>For this test, just those two: the instructions you were given, and how it is marked. Simplifii reads them and carries the details into your writing workspace. Nothing else yet, even if you have a course outline or a draft on hand.</p>
         </section>
 
         <section className="setup-card" aria-labelledby="materials-heading">
           <div className="card-heading-row">
             <div>
-              <h2 id="materials-heading">Assignment material</h2>
-              <p>Brief, rubric, course outline, current draft—or whatever your institution calls them.</p>
+              <h2 id="materials-heading">Assignment brief and rubric only</h2>
+              <p>Two files max for this test: what you were given for the assignment, and the marking criteria. Hold off on the course outline or a draft for now.</p>
             </div>
             <span className="quiet-pill">PDF · DOCX · text</span>
           </div>
@@ -882,6 +898,9 @@ function ImportScreen({
                 </div>
               ))}
             </div>
+          ) : null}
+          {files.length > 2 ? (
+            <p className="inline-error" role="alert">That is more than the two this test covers. Remove the extra files so it is just the brief and the rubric.</p>
           ) : null}
 
           <div className="paste-divider"><span>or paste the wording</span></div>
@@ -1116,6 +1135,37 @@ function Workspace({
   const highestLeverageCriterion = assignment.criteria.find((criterion) => criterion.id === analysisResult?.highestLeverageCriterionId);
   const totalWords = blocks.reduce((total, block) => total + writingBlockWordCount(block), 0);
   const blockIds = useMemo(() => new Set(blocks.map((block) => block.id)), [blocks]);
+  const progressStats = useMemo(() => {
+    const blocksStarted = blocks.filter((block) => writingBlockWordCount(block) > 0).length;
+    let checksTotal = 0;
+    let checksMet = 0;
+    for (const block of blocks) {
+      const guidance = block.guidanceIds.map((id) => requirementMap.get(id)).filter((item): item is Requirement => Boolean(item));
+      const blockReview = blockAnalysisMap.get(block.id);
+      const checks = blockReview?.checklist.length ? blockReview.checklist : guidance.map((requirement) => ({ text: requirement.text, met: false }));
+      checksTotal += checks.length;
+      checksMet += checks.filter((check) => check.met).length;
+    }
+    return {
+      blocksStarted,
+      totalBlocks: blocks.length,
+      percent: checksTotal > 0 ? Math.round((checksMet / checksTotal) * 100) : 0,
+    };
+  }, [blocks, requirementMap, blockAnalysisMap]);
+  const nextTask = useMemo(() => {
+    const candidates = blocks.map((block) => {
+      const guidance = block.guidanceIds.map((id) => requirementMap.get(id)).filter((item): item is Requirement => Boolean(item));
+      const blockReview = blockAnalysisMap.get(block.id);
+      const checks = blockReview?.checklist.length ? blockReview.checklist : guidance.map((requirement) => ({ text: requirement.text, met: false }));
+      const firstUnmet = checks.find((check) => !check.met);
+      return firstUnmet ? { blockId: block.id, heading: block.heading || "this block", text: firstUnmet.text } : null;
+    });
+    return candidates.find((candidate): candidate is { blockId: string; heading: string; text: string } => Boolean(candidate)) ?? null;
+  }, [blocks, requirementMap, blockAnalysisMap]);
+  const unhomedRequirements = useMemo(
+    () => findUnhomedRequirements(assignment.requirements, blocks),
+    [assignment.requirements, blocks],
+  );
   const allAnnotations = useMemo(
     () => (analysisResult?.annotations ?? []).filter((annotation) => blockIds.has(annotation.blockId) && criterionMap.has(annotation.criterionId)),
     [analysisResult, blockIds, criterionMap],
@@ -1385,6 +1435,13 @@ function Workspace({
       : `${addressed} of ${activeCriterionAnnotations.length} addressed. The rest stay highlighted.`);
   };
 
+  const scrollToBlock = (blockId: string) => {
+    const editor = editorsRef.current.get(blockId);
+    if (!editor) return;
+    editor.scrollIntoView({ behavior: "smooth", block: "center" });
+    editor.focus();
+  };
+
   const closeCoach = () => {
     const anchor = coachNote?.anchor;
     setCoachNote(null);
@@ -1428,6 +1485,34 @@ function Workspace({
         <div className="workspace-column">
           {view === "guide" ? (
             <div className="guide-layout">
+              <div className="progress-shell">
+                <div className="progress-top">
+                  <strong>{progressStats.blocksStarted} of {progressStats.totalBlocks} sections started</strong>
+                  <span>{progressStats.percent}% understood</span>
+                </div>
+                <div className="progress-track"><div className="progress-fill" style={{ width: `${progressStats.percent}%` }} /></div>
+                <div className="progress-steps">
+                  {blocks.map((block) => (
+                    <div
+                      key={block.id}
+                      className={`progress-step${writingBlockWordCount(block) > 0 ? " done" : ""}`}
+                      aria-hidden="true"
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {nextTask ? (
+                <div className="next-task-chip">
+                  <span className="dot" aria-hidden="true" />
+                  <div>
+                    <div className="label">ONE THING TO DO NEXT</div>
+                    <div className="task">{nextTask.text}</div>
+                  </div>
+                  <button type="button" onClick={() => scrollToBlock(nextTask.blockId)}>Take me there</button>
+                </div>
+              ) : null}
+
               <section className="rubric-section" ref={rubricRef}>
                 <div className="rubric-heading">
                   <div><span className="review-label">RUBRIC</span><p>Marked against the imported criteria.</p></div>
@@ -1622,6 +1707,17 @@ function Workspace({
                   );
                 })}
               </div>
+
+              {unhomedRequirements.length && blocks.length ? (
+                <div className="suggested-block">
+                  <span className="icon" aria-hidden="true">+</span>
+                  <div>
+                    <strong>Your rubric also mentions something with no block yet</strong>
+                    <p>{unhomedRequirements[0].text} {unhomedRequirements.length > 1 ? `(and ${unhomedRequirements.length - 1} more like it)` : ""}</p>
+                  </div>
+                  <button type="button" onClick={() => onInsert(blocks[blocks.length - 1].id, "after")}>Add block</button>
+                </div>
+              ) : null}
             </div>
           ) : (
             <article className="full-draft-card">
