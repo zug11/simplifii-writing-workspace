@@ -349,3 +349,64 @@ test("keeps the approved P0 choices, rich editor, local assignment cache, AI wir
 
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", templateRoot)));
 });
+
+
+test("personalisation support state routes rubric views deterministically and remains learner-correctable", async () => {
+  const {
+    adjustSupportLevel,
+    confirmContextHelpful,
+    createDefaultSupportState,
+    forgetContextPreference,
+    selectContextRepresentation,
+    setTaskOnlyRepresentation,
+  } = await import(new URL("../lib/personalisation/support-state.ts", import.meta.url));
+  const { routeRubricSupport } = await import(new URL("../lib/personalisation/route-support.ts", import.meta.url));
+
+  let state = createDefaultSupportState();
+  let route = routeRubricSupport({ supportState: state, assignmentId: "assignment-a" });
+  assert.equal(route.representation, "guide");
+  assert.deepEqual(route.reason, ["safe_default"]);
+
+  state = selectContextRepresentation(state, "rubric", "compare", "assignment-a");
+  route = routeRubricSupport({ supportState: state, assignmentId: "assignment-a" });
+  assert.equal(route.representation, "compare");
+  assert.match(route.reason[0], /^rubric_context:/);
+
+  state = confirmContextHelpful(state, "rubric", "compare", "assignment-a");
+  assert.equal(state.contexts.rubric.representationRank[0], "compare");
+  assert.equal(state.contexts.rubric.confidence, "emerging");
+  assert.ok(state.evidence.some((event) => event.signal === "confirmed_helpful" && event.value === "compare"));
+
+  state = setTaskOnlyRepresentation(state, "rubric", "assignment-a", "original");
+  assert.equal(routeRubricSupport({ supportState: state, assignmentId: "assignment-a" }).representation, "original");
+  assert.equal(routeRubricSupport({ supportState: state, assignmentId: "assignment-b" }).representation, "compare");
+
+  state = adjustSupportLevel(state, "rubric", "more", "assignment-a");
+  assert.equal(state.contexts.rubric.supportLevel, 2);
+
+  state = forgetContextPreference(state, "rubric", "assignment-a");
+  route = routeRubricSupport({ supportState: state, assignmentId: "assignment-a" });
+  assert.equal(route.representation, "guide");
+  assert.equal(state.contexts.rubric, undefined);
+  assert.ok(state.corrections.some((event) => event.action === "forget"));
+});
+
+test("rubric personalisation is wired into the review flow and remains browser-local", async () => {
+  const [page, component, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/personalisation/RubricPersonalisation.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /supportState\?: SupportStateV1/);
+  assert.match(page, /supportState: createDefaultSupportState\(\)/);
+  assert.match(page, /setSupportState\(normaliseSupportState\(record\.supportState\)\)/);
+  assert.match(page, /<RubricPersonalisation/);
+  assert.match(component, /Guide/);
+  assert.match(component, /Compare/);
+  assert.match(component, /Original/);
+  assert.match(component, /Forget preference/);
+  assert.match(component, /Only for this assignment/);
+  assert.doesNotMatch(component, /fetch\(/);
+  assert.match(css, /prefers-reduced-motion: reduce/);
+});
