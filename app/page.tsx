@@ -20,7 +20,9 @@ import {
   type EditorCommand,
 } from "@/app/components/RichTextEditor";
 import { FeedbackWidget } from "@/app/components/FeedbackWidget";
+import { RubricPersonalisation } from "@/app/components/personalisation/RubricPersonalisation";
 import { prepareBrowserCache, quarantineUnreadableBrowserCache, readBrowserCache, writeBrowserCache, writeBrowserJournal } from "@/lib/browser-cache";
+import { createDefaultSupportState, normaliseSupportState, type SupportStateV1 } from "@/lib/personalisation/support-state";
 import { projectDraftIntoBlocks, projectDraftIntoOneBlock, segmentDraft, type DraftGrouping } from "@/lib/draft-structure";
 
 type Stage = "import" | "review" | "choice" | "workspace";
@@ -134,6 +136,7 @@ type CachedAssignment = {
   analysisResult: DraftAnalysis | null;
   analysisStale?: boolean;
   annotationStateById?: Record<string, AnnotationState>;
+  supportState?: SupportStateV1;
 };
 
 type CachedAppState = {
@@ -251,6 +254,7 @@ function blankCachedAssignment(): CachedAssignment {
     analysisResult: null,
     analysisStale: false,
     annotationStateById: {},
+    supportState: createDefaultSupportState(),
   };
 }
 
@@ -282,6 +286,7 @@ function isCachedAssignment(item: unknown): item is CachedAssignment {
       && typeof block.guide.nextStep === "string"
       && typeof block.guide.biggerPicture === "string")))) return false;
   if (item.analysisStale !== undefined && typeof item.analysisStale !== "boolean") return false;
+  if (item.supportState !== undefined && normaliseSupportState(item.supportState) !== item.supportState) return false;
   if (item.annotationStateById !== undefined && (!isRecord(item.annotationStateById) || !Object.values(item.annotationStateById).every((state) => state === "open" || state === "edited" || state === "resolved"))) return false;
   if (item.analysisResult === null) return true;
   if (!isRecord(item.analysisResult) || typeof item.analysisResult.summary !== "string" || !Array.isArray(item.analysisResult.criteria)) return false;
@@ -904,7 +909,7 @@ function ImportScreen({
   );
 }
 
-function ReviewScreen({ assignment, files, onBack, onContinue, assignmentMenu }: { assignment: Assignment; files: ImportedFile[]; onBack: () => void; onContinue: () => void; assignmentMenu: AssignmentMenuProps }) {
+function ReviewScreen({ assignment, files, assignmentId, supportState, onSupportState, onBack, onContinue, assignmentMenu }: { assignment: Assignment; files: ImportedFile[]; assignmentId: string; supportState: SupportStateV1; onSupportState: (state: SupportStateV1) => void; onBack: () => void; onContinue: () => void; assignmentMenu: AssignmentMenuProps }) {
   return (
     <div className="setup-shell">
       <ImportHeader assignmentMenu={assignmentMenu} />
@@ -951,6 +956,13 @@ function ReviewScreen({ assignment, files, onBack, onContinue, assignmentMenu }:
             ))}
           </section>
         </div>
+
+        <RubricPersonalisation
+          assignmentId={assignmentId}
+          criteria={assignment.criteria}
+          supportState={supportState}
+          onSupportState={onSupportState}
+        />
 
         <div className="review-actions">
           <span>This becomes the context behind every block.</span>
@@ -1723,6 +1735,7 @@ function WorkspaceApp() {
   const [analysisResult, setAnalysisResult] = useState<DraftAnalysis | null>(null);
   const [analysisStale, setAnalysisStale] = useState(false);
   const [annotationStateById, setAnnotationStateById] = useState<Record<string, AnnotationState>>({});
+  const [supportState, setSupportState] = useState<SupportStateV1>(() => createDefaultSupportState());
   const [analysisError, setAnalysisError] = useState("");
   const [analysingBlockId, setAnalysingBlockId] = useState<string | null>(null);
   const [blockAnalysisErrors, setBlockAnalysisErrors] = useState<Record<string, string>>({});
@@ -1790,6 +1803,7 @@ function WorkspaceApp() {
     } : null);
     setAnalysisStale(record.analysisStale ?? false);
     setAnnotationStateById(record.annotationStateById ?? {});
+    setSupportState(normaliseSupportState(record.supportState));
     setAnalysisError("");
     setAnalysingBlockId(null);
     setBlockAnalysisErrors({});
@@ -1846,8 +1860,9 @@ function WorkspaceApp() {
       analysisResult,
       analysisStale,
       annotationStateById,
+      supportState,
     };
-  }, [activeAssignmentId, analysisResult, analysisStale, annotationStateById, assignment, blocks, choice, draftText, files, pastedText, stage, structurePlan, view]);
+  }, [activeAssignmentId, analysisResult, analysisStale, annotationStateById, assignment, blocks, choice, draftText, files, pastedText, stage, structurePlan, supportState, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2439,7 +2454,7 @@ function WorkspaceApp() {
     return <ImportScreen files={files} pastedText={pastedText} onFiles={addFiles} onPaste={changePastedText} onRemove={removeFile} onContinue={readAssignment} isReading={isReading} error={importError} assignmentMenu={assignmentMenu} />;
   }
   if (stage === "review") {
-    return <ReviewScreen assignment={assignment} files={files} onBack={() => setStage("import")} onContinue={() => setStage("choice")} assignmentMenu={assignmentMenu} />;
+    return <ReviewScreen assignment={assignment} files={files} assignmentId={activeAssignmentId} supportState={supportState} onSupportState={setSupportState} onBack={() => setStage("import")} onContinue={() => setStage("choice")} assignmentMenu={assignmentMenu} />;
   }
   if (stage === "choice") {
     return (
