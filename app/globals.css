@@ -815,3 +815,275 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .feedback-trigger, .feedback-rating { transition: none; }
 }
+
+
+/* Personalisation Slice 01 — rubric representation trial */
+.personalisation-rubric {
+  margin-top: 24px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--panel);
+}
+
+.personalisation-rubric-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.personalisation-rubric-heading h2 {
+  margin: 4px 0 6px;
+  font-size: 1.45rem;
+  letter-spacing: -0.03em;
+}
+
+.personalisation-rubric-heading p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.personalisation-confidence {
+  min-width: 120px;
+  text-align: right;
+}
+
+.personalisation-confidence span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.personalisation-confidence strong {
+  display: block;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.personalisation-criterion-picker,
+.personalisation-switcher,
+.personalisation-support-row,
+.personalisation-feedback > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.personalisation-criterion-picker {
+  margin-top: 18px;
+}
+
+.personalisation-criterion-picker button,
+.personalisation-switcher button,
+.personalisation-support-row button,
+.personalisation-feedback button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: inherit;
+  padding: 8px 11px;
+  cursor: pointer;
+}
+
+.personalisation-criterion-picker button[aria-pressed="true"],
+.personalisation-switcher button[aria-selected="true"] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.personalisation-switcher {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.personalisation-surface {
+  margin-top: 14px;
+  min-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  padding: 18px;
+}
+
+.personalisation-source-kicker {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.personalisation-guide h3,
+.personalisation-original h3,
+.personalisation-compare h3 {
+  margin: 6px 0 8px;
+  font-size: 1.35rem;
+}
+
+.personalisation-guide > p,
+.personalisation-original > p,
+.personalisation-compare-target > p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.personalisation-guide ol {
+  margin: 16px 0 0;
+  padding-left: 20px;
+}
+
+.personalisation-guide li {
+  margin: 11px 0;
+  padding-left: 4px;
+}
+
+.personalisation-guide li span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.personalisation-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.72fr);
+  gap: 16px;
+}
+
+.personalisation-compare-target,
+.personalisation-compare-others {
+  min-width: 0;
+}
+
+.personalisation-compare-target > strong {
+  display: inline-block;
+  margin-top: 10px;
+}
+
+.personalisation-compare-others {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.personalisation-compare-others button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.personalisation-compare-others button em {
+  color: var(--muted);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.personalisation-original dl {
+  margin: 18px 0 0;
+}
+
+.personalisation-original dl > div {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.personalisation-original dt {
+  color: var(--muted);
+}
+
+.personalisation-original dd {
+  margin: 0;
+}
+
+.personalisation-support-row {
+  align-items: center;
+  margin-top: 14px;
+}
+
+.personalisation-support-row > span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.personalisation-feedback {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.personalisation-feedback > span {
+  font-weight: 700;
+}
+
+.personalisation-notice {
+  margin: 12px 0 0;
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+
+.personalisation-footnote {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .personalisation-rubric {
+    padding: 16px;
+  }
+
+  .personalisation-rubric-heading,
+  .personalisation-compare {
+    display: block;
+  }
+
+  .personalisation-confidence {
+    margin-top: 12px;
+    text-align: left;
+  }
+
+  .personalisation-compare-others {
+    margin-top: 16px;
+    padding: 14px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .personalisation-original dl > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .personalisation-rubric *,
+  .personalisation-rubric *::before,
+  .personalisation-rubric *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
